@@ -1924,7 +1924,7 @@ function routineTitle(job) {
 function useRoutines() {
   return useQuery({
     queryKey: ROUTINES_KEY,
-    queryFn: () => host.request('cron.manage', { action: 'list' }),
+    queryFn: () => host.request('cron.manage', { action: 'list', include_disabled: true }),
     refetchInterval: 20000,
     staleTime: 8000
   })
@@ -1963,7 +1963,15 @@ function scheduleLabel(schedule) {
 
 function RoutineRow({ job, onChanged }) {
   const [busy, setBusy] = useState(false)
-  const active = job.enabled !== false && job.state !== 'paused'
+  // Optimistic overlay: null = trust server state. Set immediately on
+  // toggle so the switch responds even before the refetch lands.
+  const [pendingActive, setPendingActive] = useState(null)
+  const serverActive = job.enabled !== false && job.state !== 'paused'
+  const active = pendingActive === null ? serverActive : pendingActive
+
+  if (pendingActive !== null && pendingActive === serverActive) {
+    setPendingActive(null) // server caught up
+  }
 
   const act = async action => {
     if (busy) {
@@ -1972,10 +1980,15 @@ function RoutineRow({ job, onChanged }) {
 
     setBusy(true)
 
+    if (action === 'pause' || action === 'resume') {
+      setPendingActive(action === 'resume')
+    }
+
     try {
       await host.request('cron.manage', { action, name: job.job_id })
       onChanged()
     } catch (err) {
+      setPendingActive(null)
       host.notifyError(err, 'Routine update failed')
     } finally {
       setBusy(false)
