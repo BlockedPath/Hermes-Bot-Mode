@@ -837,7 +837,7 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
           })
         : null,
 
-      tab === 'pet' ? jsx(PetTab, { botName: pickerName }) : null
+      tab === 'pet' ? jsx(PetTab, { image, onImage }) : null
     ]
   })
 }
@@ -928,10 +928,11 @@ function PetThumb({ spriteUrl, size = 40 }) {
   })
 }
 
-function PetTab({ botName }) {
-  const metaAll = useValue($botMeta)
-  const currentPetSlug = metaAll[botName]?.petSlug || null
-  const hasImage = Boolean(metaAll[botName]?.image)
+function PetTab({ image, onImage }) {
+  // Selection is dialog-local: committed by the dialog's Save like any
+  // uploaded/generated image (a direct meta write here gets clobbered by
+  // Save's own image state).
+  const [selectedSlug, setSelectedSlug] = useState(null)
   const { data, isLoading } = useQuery({
     queryKey: [ID, 'pet-gallery'],
     queryFn: () => host.request('pet.gallery', {}),
@@ -992,13 +993,16 @@ function PetTab({ botName }) {
           setLimit(24)
         }
       }),
-      hasImage && currentPetSlug
+      image && selectedSlug
         ? jsx(Button, {
             type: 'button',
             variant: 'ghost',
             size: 'sm',
             className: 'justify-center',
-            onClick: () => saveBotMeta(botName, { image: null, petSlug: null }),
+            onClick: () => {
+              setSelectedSlug(null)
+              onImage(null)
+            },
             children: 'Remove — back to shape avatar'
           })
         : null,
@@ -1024,16 +1028,18 @@ function PetTab({ botName }) {
                       type: 'button',
                       className: cn(
                         'grid justify-items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-(--chrome-action-hover)',
-                        currentPetSlug === pet.slug && hasImage && 'ring-1 ring-(--ui-accent)'
+                        selectedSlug === pet.slug && 'ring-1 ring-(--ui-accent)'
                       ),
                       onClick: () => {
                         // The pet IS the profile picture: extract frame 0
-                        // (small data URL) and set it as the avatar image —
-                        // saveBotMeta syncs it to the profile asset store.
+                        // and hand it to the dialog as the avatar image.
+                        // Persisted when the user hits Save.
+                        setSelectedSlug(pet.slug)
                         void petFrameIcon(pet.spritesheetUrl).then(icon => {
                           if (icon) {
-                            saveBotMeta(botName, { image: icon, petSlug: pet.slug })
+                            onImage(icon)
                           } else {
+                            setSelectedSlug(null)
                             host.notify({ kind: 'error', message: 'Could not load that pet — try another.' })
                           }
                         })
