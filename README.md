@@ -4,6 +4,11 @@ A desktop plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent
 
 ![Hermes Agent desktop plugin](https://img.shields.io/badge/hermes-desktop%20plugin-8b5cf6) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
+<p align="center">
+  <img src="docs/bots-pane.png" alt="Bots roster pane — one row per agent with avatar, preview, and timestamp" width="46%" />
+  <img src="docs/cronjobs-pane.png" alt="Cronjobs pane — recurring tasks per agent" width="26%" />
+</p>
+
 ## What you get
 
 - **Bots pane** — a left-side roster with one row per agent profile: avatar, latest-message preview, and timestamp. Click a bot to land in its chat.
@@ -26,6 +31,12 @@ A bot **is** a Hermes profile — isolated config, memory, skills, credentials, 
 - Bot-to-bot messages are real CLI handoffs: `hermes -p <bot> chat -c "Agent Inbox" -q "..."`.
 
 No core patches, no background daemons, no extra storage: everything is standard Hermes surface.
+
+## Screenshots
+
+| New Agent | Advanced profile config | Pet avatars | New Cronjob |
+| --- | --- | --- | --- |
+| ![New Agent dialog — avatar tabs, shape grid, colors, name/title/description](docs/new-agent.png) | ![Advanced — clone-from, provider/model, SOUL.md, skills](docs/new-agent-advanced.png) | ![Pet tab — searchable petdex gallery as profile pictures](docs/pet-avatars.png) | ![New Cronjob — guided schedule picker with run cap and live summary](docs/new-cronjob.png) |
 
 ## Install
 
