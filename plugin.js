@@ -1880,7 +1880,7 @@ function routineBot(job) {
 }
 
 function routineTitle(job) {
-  return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled routine'
+  return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled cronjob'
 }
 
 function useRoutines() {
@@ -1951,7 +1951,7 @@ function RoutineRow({ job, onChanged }) {
       onChanged()
     } catch (err) {
       setPendingActive(null)
-      host.notifyError(err, 'Routine update failed')
+      host.notifyError(err, 'Cronjob update failed')
     } finally {
       setBusy(false)
     }
@@ -1980,7 +1980,7 @@ function RoutineRow({ job, onChanged }) {
             onCheckedChange: value => act(value ? 'resume' : 'pause')
           }),
           jsx(Tip, {
-            label: 'Delete routine',
+            label: 'Delete cronjob',
             children: jsx('button', {
               type: 'button',
               disabled: busy,
@@ -2010,17 +2010,178 @@ function RoutineRow({ job, onChanged }) {
   })
 }
 
+// Structured schedule picker: frequency first, then only the detail that
+// frequency needs (time of day, weekday, day of month, interval). Emits a
+// Hermes-native schedule string; Advanced exposes it raw.
+const FREQUENCIES = [
+  { id: 'hourly', label: 'Every hour' },
+  { id: 'daily', label: 'Every day' },
+  { id: 'weekdays', label: 'Weekdays' },
+  { id: 'weekly', label: 'Every week' },
+  { id: 'monthly', label: 'Every month' },
+  { id: 'interval', label: 'Interval' },
+  { id: 'advanced', label: 'Advanced\u2026' }
+]
+
+const WEEKDAYS = [
+  { id: '1', label: 'Monday' },
+  { id: '2', label: 'Tuesday' },
+  { id: '3', label: 'Wednesday' },
+  { id: '4', label: 'Thursday' },
+  { id: '5', label: 'Friday' },
+  { id: '6', label: 'Saturday' },
+  { id: '0', label: 'Sunday' }
+]
+
+const TIMES = (() => {
+  const out = []
+  for (let h = 0; h < 24; h++) {
+    for (const m of [0, 30]) {
+      const ampm = h < 12 ? 'AM' : 'PM'
+      const h12 = h % 12 === 0 ? 12 : h % 12
+      out.push({ id: `${h}:${m}`, label: `${h12}:${String(m).padStart(2, '0')} ${ampm}`, h, m })
+    }
+  }
+  return out
+})()
+
+/** Compose the Hermes schedule string from picker state. */
+function composeSchedule(state) {
+  const [h, m] = (state.time || '9:0').split(':').map(Number)
+
+  switch (state.freq) {
+    case 'hourly':
+      return 'every 1h'
+    case 'daily':
+      return `${m} ${h} * * *`
+    case 'weekdays':
+      return `${m} ${h} * * 1-5`
+    case 'weekly':
+      return `${m} ${h} * * ${state.weekday || '1'}`
+    case 'monthly':
+      return `${m} ${h} ${state.monthday || '1'} * *`
+    case 'interval': {
+      const n = Math.max(1, parseInt(state.intervalN, 10) || 1)
+      return `every ${n}${state.intervalUnit || 'h'}`
+    }
+    default:
+      return state.raw || ''
+  }
+}
+
+function scheduleSummary(state) {
+  const t = TIMES.find(x => x.id === state.time)
+  const tl = t ? t.label : '9:00 AM'
+
+  switch (state.freq) {
+    case 'hourly':
+      return 'Runs at the top of every hour'
+    case 'daily':
+      return `Runs every day at ${tl}`
+    case 'weekdays':
+      return `Runs Monday\u2013Friday at ${tl}`
+    case 'weekly':
+      return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}`
+    case 'monthly':
+      return `Runs on day ${state.monthday || '1'} of each month at ${tl}`
+    case 'interval':
+      return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${state.intervalUnit === 'm' ? 'minute(s)' : state.intervalUnit === 'd' ? 'day(s)' : 'hour(s)'}`
+    default:
+      return 'Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron'
+  }
+}
+
+function pickerSelect(value, onChange, options) {
+  return jsxs(Select, {
+    value,
+    onValueChange: onChange,
+    children: [
+      jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+      jsx(SelectContent, {
+        children: options.map(o => jsx(SelectItem, { value: o.id, children: o.label }, o.id))
+      })
+    ]
+  })
+}
+
+function SchedulePicker({ state, setState }) {
+  const upd = patch => setState(prev => ({ ...prev, ...patch }))
+  const needsTime = ['daily', 'weekdays', 'weekly', 'monthly'].includes(state.freq)
+
+  return jsxs('div', {
+    className: 'grid gap-2',
+    children: [
+      jsxs('div', {
+        style: { display: 'grid', gridTemplateColumns: needsTime ? '1fr 1fr' : '1fr', gap: '8px' },
+        children: [
+          pickerSelect(state.freq, v => upd({ freq: v }), FREQUENCIES),
+          needsTime ? pickerSelect(state.time, v => upd({ time: v }), TIMES) : null
+        ]
+      }),
+      state.freq === 'weekly'
+        ? pickerSelect(state.weekday, v => upd({ weekday: v }), WEEKDAYS)
+        : null,
+      state.freq === 'monthly'
+        ? labeled(
+            'Day of month',
+            jsx(Input, {
+              className: 'h-8',
+              placeholder: '1',
+              value: state.monthday,
+              onChange: event => upd({ monthday: event.target.value.replace(/[^0-9]/g, '').slice(0, 2) })
+            })
+          )
+        : null,
+      state.freq === 'interval'
+        ? jsxs('div', {
+            style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+            children: [
+              jsx(Input, {
+                className: 'h-8',
+                placeholder: '2',
+                value: state.intervalN,
+                onChange: event => upd({ intervalN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+              }),
+              pickerSelect(state.intervalUnit, v => upd({ intervalUnit: v }), [
+                { id: 'm', label: 'minutes' },
+                { id: 'h', label: 'hours' },
+                { id: 'd', label: 'days' }
+              ])
+            ]
+          })
+        : null,
+      state.freq === 'advanced'
+        ? jsx(Input, {
+            className: 'h-8 font-mono text-xs',
+            placeholder: 'every 1d \u00b7 every 2h \u00b7 0 9 * * * (cron)',
+            value: state.raw,
+            onChange: event => upd({ raw: event.target.value })
+          })
+        : null,
+      jsx('div', {
+        className: 'text-[0.65rem] text-(--ui-text-quaternary)',
+        children: `${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || '\u2014'}`
+      })
+    ]
+  })
+}
+
+function defaultScheduleState() {
+  return { freq: 'daily', time: '9:0', weekday: '1', monthday: '1', intervalN: '2', intervalUnit: 'h', raw: '' }
+}
+
 function CreateRoutineDialog({ bot, open, onClose }) {
   const [name, setName] = useState('')
   const [instruction, setInstruction] = useState('')
-  const [schedule, setSchedule] = useState('every 1d')
+  const [sched, setSched] = useState(defaultScheduleState())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const schedule = composeSchedule(sched)
 
   const reset = () => {
     setName('')
     setInstruction('')
-    setSchedule('every 1d')
+    setSched(defaultScheduleState())
     setBusy(false)
     setError(null)
   }
@@ -2044,7 +2205,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         prompt: routinePrompt(bot, title, task)
       })
       queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
-      host.notify({ kind: 'success', message: `Routine "${title}" scheduled` })
+      host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
       reset()
       onClose()
     } catch (err) {
@@ -2066,7 +2227,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'New Routine' }),
+            jsx(DialogTitle, { children: 'New Cronjob' }),
             jsx(DialogDescription, {
               children: `A recurring task ${displayName({ name: bot }, $botMeta.get()[bot])} runs on a schedule. Runs land in its own chat history.`
             })
@@ -2079,7 +2240,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               'Name',
               jsx(Input, {
                 autoFocus: true,
-                placeholder: 'Name this routine',
+                placeholder: 'Name this cronjob',
                 value: name,
                 onChange: event => setName(event.target.value)
               })
@@ -2088,19 +2249,12 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               'Instruction',
               jsx(Textarea, {
                 className: 'min-h-20',
-                placeholder: 'What should this routine do each time it runs?',
+                placeholder: 'What should this cronjob do each time it runs?',
                 value: instruction,
                 onChange: event => setInstruction(event.target.value)
               })
             ),
-            labeled(
-              'When to run — on a schedule',
-              jsx(Input, {
-                placeholder: 'every 1d · every 2h · 0 9 * * * (cron)',
-                value: schedule,
-                onChange: event => setSchedule(event.target.value)
-              })
-            ),
+            labeled('When to run', jsx(SchedulePicker, { state: sched, setState: setSched })),
             error
               ? jsx('div', {
                   className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)',
@@ -2123,7 +2277,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
             jsx(Button, {
               disabled: busy || !name.trim() || !instruction.trim() || !schedule.trim(),
               onClick: submit,
-              children: busy ? 'Scheduling…' : 'Create Routine'
+              children: busy ? 'Scheduling…' : 'Create Cronjob'
             })
           ]
         })
@@ -2161,12 +2315,12 @@ function RoutinesPane() {
               }),
               jsx('div', {
                 className: 'text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)',
-                children: 'Routines'
+                children: 'Cronjobs'
               })
             ]
           }),
           jsx(Tip, {
-            label: 'New Routine',
+            label: 'New Cronjob',
             children: jsx('button', {
               type: 'button',
               className:
@@ -2190,13 +2344,13 @@ function RoutinesPane() {
                 jsx(Codicon, { name: 'calendar', className: 'text-[1.6rem] text-(--ui-text-quaternary)' }),
                 jsx('div', {
                   className: 'text-xs leading-5 text-(--ui-text-tertiary)',
-                  children: 'Routines are recurring tasks this agent runs on a schedule.'
+                  children: 'Cronjobs are recurring tasks this agent runs on a schedule.'
                 }),
                 jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
                   onClick: () => setCreateOpen(true),
-                  children: 'Create Routine'
+                  children: 'Create Cronjob'
                 })
               ]
             })
@@ -2357,7 +2511,7 @@ export default {
     ctx.register({
       id: 'routines',
       area: 'panes',
-      title: 'Routines',
+      title: 'Cronjobs',
       data: {
         placement: 'main',
         dock: { pane: 'workspace', pos: 'right' },
