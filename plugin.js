@@ -1191,9 +1191,20 @@ function BotRow({ bot, onEdit }) {
           jsxs('div', {
             className: 'flex items-baseline justify-between gap-2',
             children: [
-              jsx('span', {
-                className: 'truncate text-[0.8125rem] font-medium',
-                children: displayName(bot, meta)
+              jsxs('div', {
+                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+                children: [
+                  jsx('span', {
+                    className: 'truncate text-[0.8125rem] font-medium',
+                    children: displayName(bot, meta)
+                  }),
+                  bot.name && meta?.title?.trim() && bot.name.toLowerCase() !== meta.title.trim().toLowerCase()
+                    ? jsx('span', {
+                        className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
+                        children: `@${bot.name}`
+                      })
+                    : null
+                ]
               }),
               last
                 ? jsx('span', {
@@ -2372,9 +2383,20 @@ function RoutinesPane() {
           jsxs('div', {
             className: 'min-w-0 flex-1',
             children: [
-              jsx('div', {
-                className: 'truncate text-xs font-semibold',
-                children: displayName({ name: bot }, meta)
+              jsxs('div', {
+                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+                children: [
+                  jsx('div', {
+                    className: 'truncate text-xs font-semibold',
+                    children: displayName({ name: bot }, meta)
+                  }),
+                  meta?.title?.trim() && bot.toLowerCase() !== meta.title.trim().toLowerCase()
+                    ? jsx('span', {
+                        className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
+                        children: `@${bot}`
+                      })
+                    : null
+                ]
               }),
               jsx('div', {
                 className: 'text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)',
