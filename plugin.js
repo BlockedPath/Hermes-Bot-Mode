@@ -1902,6 +1902,18 @@ function routinePrompt(bot, title, instruction) {
 }
 
 function scheduleLabel(schedule) {
+  const once = /^once in (.+)$/.exec(schedule || '')
+
+  if (once) {
+    return `Once (${once[1]})`
+  }
+
+  const bare = /^(\d+)([mhd])$/.exec(schedule || '')
+
+  if (bare) {
+    return `Once (${bare[1]}${bare[2]})`
+  }
+
   const match = /^every (\d+)m$/.exec(schedule || '')
 
   if (match) {
@@ -2014,6 +2026,7 @@ function RoutineRow({ job, onChanged }) {
 // frequency needs (time of day, weekday, day of month, interval). Emits a
 // Hermes-native schedule string; Advanced exposes it raw.
 const FREQUENCIES = [
+  { id: 'once', label: 'Once, in\u2026' },
   { id: 'hourly', label: 'Every hour' },
   { id: 'daily', label: 'Every day' },
   { id: 'weekdays', label: 'Weekdays' },
@@ -2050,6 +2063,10 @@ function composeSchedule(state) {
   const [h, m] = (state.time || '9:0').split(':').map(Number)
 
   switch (state.freq) {
+    case 'once': {
+      const n = Math.max(1, parseInt(state.onceN, 10) || 1)
+      return `${n}${state.onceUnit || 'h'}`
+    }
     case 'hourly':
       return 'every 1h'
     case 'daily':
@@ -2073,19 +2090,27 @@ function scheduleSummary(state) {
   const t = TIMES.find(x => x.id === state.time)
   const tl = t ? t.label : '9:00 AM'
 
+  const unitWord = u => (u === 'm' ? 'minute(s)' : u === 'd' ? 'day(s)' : 'hour(s)')
+  const cap =
+    state.freq !== 'once' && String(state.repeatN || '').trim()
+      ? `, ${Math.max(1, parseInt(state.repeatN, 10) || 1)} time(s) total`
+      : ''
+
   switch (state.freq) {
+    case 'once':
+      return `Runs once, ${Math.max(1, parseInt(state.onceN, 10) || 1)} ${unitWord(state.onceUnit)} from now`
     case 'hourly':
-      return 'Runs at the top of every hour'
+      return 'Runs at the top of every hour' + cap
     case 'daily':
-      return `Runs every day at ${tl}`
+      return `Runs every day at ${tl}` + cap
     case 'weekdays':
-      return `Runs Monday\u2013Friday at ${tl}`
+      return `Runs Monday\u2013Friday at ${tl}` + cap
     case 'weekly':
-      return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}`
+      return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}` + cap
     case 'monthly':
-      return `Runs on day ${state.monthday || '1'} of each month at ${tl}`
+      return `Runs on day ${state.monthday || '1'} of each month at ${tl}` + cap
     case 'interval':
-      return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${state.intervalUnit === 'm' ? 'minute(s)' : state.intervalUnit === 'd' ? 'day(s)' : 'hour(s)'}`
+      return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${unitWord(state.intervalUnit)}` + cap
     default:
       return 'Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron'
   }
@@ -2118,6 +2143,24 @@ function SchedulePicker({ state, setState }) {
           needsTime ? pickerSelect(state.time, v => upd({ time: v }), TIMES) : null
         ]
       }),
+      state.freq === 'once'
+        ? jsxs('div', {
+            style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+            children: [
+              jsx(Input, {
+                className: 'h-8',
+                placeholder: '30',
+                value: state.onceN,
+                onChange: event => upd({ onceN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+              }),
+              pickerSelect(state.onceUnit, v => upd({ onceUnit: v }), [
+                { id: 'm', label: 'minutes from now' },
+                { id: 'h', label: 'hours from now' },
+                { id: 'd', label: 'days from now' }
+              ])
+            ]
+          })
+        : null,
       state.freq === 'weekly'
         ? pickerSelect(state.weekday, v => upd({ weekday: v }), WEEKDAYS)
         : null,
@@ -2158,6 +2201,21 @@ function SchedulePicker({ state, setState }) {
             onChange: event => upd({ raw: event.target.value })
           })
         : null,
+      state.freq !== 'once' && state.freq !== 'advanced'
+        ? jsxs('div', {
+            className: 'flex items-center gap-2',
+            children: [
+              jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Stop after' }),
+              jsx(Input, {
+                className: 'h-7 w-16 text-xs',
+                placeholder: '\u221e',
+                value: state.repeatN,
+                onChange: event => upd({ repeatN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+              }),
+              jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: 'runs (blank = forever)' })
+            ]
+          })
+        : null,
       jsx('div', {
         className: 'text-[0.65rem] text-(--ui-text-quaternary)',
         children: `${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || '\u2014'}`
@@ -2167,7 +2225,7 @@ function SchedulePicker({ state, setState }) {
 }
 
 function defaultScheduleState() {
-  return { freq: 'daily', time: '9:0', weekday: '1', monthday: '1', intervalN: '2', intervalUnit: 'h', raw: '' }
+  return { freq: 'daily', time: '9:0', weekday: '1', monthday: '1', intervalN: '2', intervalUnit: 'h', onceN: '30', onceUnit: 'm', repeatN: '', raw: '' }
 }
 
 function CreateRoutineDialog({ bot, open, onClose }) {
@@ -2198,11 +2256,16 @@ function CreateRoutineDialog({ bot, open, onClose }) {
     setError(null)
 
     try {
+      const repeatN =
+        sched.freq !== 'once' && sched.freq !== 'advanced' && String(sched.repeatN || '').trim()
+          ? Math.max(1, parseInt(sched.repeatN, 10) || 1)
+          : null
       await host.request('cron.manage', {
         action: 'add',
         name: `[bot:${bot}] ${title}`,
         schedule: schedule.trim(),
-        prompt: routinePrompt(bot, title, task)
+        prompt: routinePrompt(bot, title, task),
+        ...(repeatN ? { repeat: repeatN } : {})
       })
       queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
       host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
