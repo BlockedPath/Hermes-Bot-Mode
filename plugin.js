@@ -90,17 +90,30 @@ function saveBotMeta(name, patch) {
   // Server-side (source of truth when supported): profile.yaml ui_meta,
   // namespaced under this plugin's id — every client machine sees the same
   // roster. Older gateways reject the param shape; that's fine, local wins.
+  // IMPORTANT: strip data-URL fields (uploaded/generated avatar image, pet
+  // icon) — ui_meta is capped at 64KB server-side because it rides every
+  // profiles.list, and a 256px PNG data URL alone blows that. Those stay in
+  // local plugin storage; only compact fields (shape/color/title/pet
+  // selection) sync.
   try {
+    const { image, ...rest } = next[name] || {}
+    const compactPet = rest.pet ? { slug: rest.pet.slug, name: rest.pet.name } : rest.pet
     host
-      .request('profiles.configure', { name, ui_meta: { 'hermes-bots': next[name] } })
+      .request('profiles.configure', {
+        name,
+        ui_meta: { 'hermes-bots': { ...rest, pet: compactPet } }
+      })
       .catch(() => undefined)
   } catch {
     /* older gateway */
   }
 }
 
-/** Server ui_meta (per roster row) beats local storage; local fills gaps for
- *  older gateways and for the moments before a server write lands. */
+/** Server ui_meta (per roster row) beats local storage for the compact
+ *  fields it carries; local-only fields (avatar image data URL, extracted
+ *  pet icon) are PRESERVED — the server copy never includes them, so a
+ *  naive replace would wipe a just-saved image avatar on the next roster
+ *  paint. Local also fills gaps for older gateways. */
 function mergeServerMeta(roster) {
   const local = $botMeta.get()
   let changed = false
@@ -109,9 +122,19 @@ function mergeServerMeta(roster) {
   for (const bot of roster) {
     const server = bot.ui_meta?.['hermes-bots']
     if (server && typeof server === 'object') {
-      const mine = JSON.stringify(next[bot.name] || null)
-      if (mine !== JSON.stringify(server)) {
-        next[bot.name] = server
+      const mine = next[bot.name] || {}
+      const merged = { ...mine, ...server }
+
+      // Local-only fields survive the server overlay.
+      if (mine.image) {
+        merged.image = mine.image
+      }
+      if (mine.pet?.icon && merged.pet && merged.pet.slug === mine.pet.slug) {
+        merged.pet = { ...merged.pet, icon: mine.pet.icon }
+      }
+
+      if (JSON.stringify(next[bot.name] || null) !== JSON.stringify(merged)) {
+        next[bot.name] = merged
         changed = true
       }
     }
