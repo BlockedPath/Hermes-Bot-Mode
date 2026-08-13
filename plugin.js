@@ -80,10 +80,45 @@ function saveBotMeta(name, patch) {
   const next = { ...$botMeta.get(), [name]: { ...($botMeta.get()[name] || {}), ...patch } }
   $botMeta.set(next)
 
+  // Local plugin storage: instant, and the fallback for older gateways.
   try {
     Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', next)).catch(() => undefined)
   } catch {
     /* storage unavailable — look persists for this window only */
+  }
+
+  // Server-side (source of truth when supported): profile.yaml ui_meta,
+  // namespaced under this plugin's id — every client machine sees the same
+  // roster. Older gateways reject the param shape; that's fine, local wins.
+  try {
+    host
+      .request('profiles.configure', { name, ui_meta: { 'hermes-bots': next[name] } })
+      .catch(() => undefined)
+  } catch {
+    /* older gateway */
+  }
+}
+
+/** Server ui_meta (per roster row) beats local storage; local fills gaps for
+ *  older gateways and for the moments before a server write lands. */
+function mergeServerMeta(roster) {
+  const local = $botMeta.get()
+  let changed = false
+  const next = { ...local }
+
+  for (const bot of roster) {
+    const server = bot.ui_meta?.['hermes-bots']
+    if (server && typeof server === 'object') {
+      const mine = JSON.stringify(next[bot.name] || null)
+      if (mine !== JSON.stringify(server)) {
+        next[bot.name] = server
+        changed = true
+      }
+    }
+  }
+
+  if (changed) {
+    $botMeta.set(next)
   }
 }
 
@@ -2148,6 +2183,7 @@ function BotsPane() {
   const [editing, setEditing] = useState(null)
   const roster = data?.profiles ?? []
   $lastRoster.set(roster)
+  mergeServerMeta(roster)
 
   return jsxs('div', {
     className: 'flex h-full flex-col',
