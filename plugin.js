@@ -1247,6 +1247,125 @@ function BotRow({ bot, onEdit }) {
   })
 }
 
+// ── model picker (provider/model dropdowns via model.options) ───────────────
+
+function useModelOptions() {
+  return useQuery({
+    queryKey: [ID, 'model-options'],
+    queryFn: () => host.request('model.options', {}),
+    staleTime: 120000,
+    retry: false
+  })
+}
+
+/**
+ * Provider + model dropdowns from the gateway's configured inventory — the
+ * same data the core model picker shows. `value = {provider, model}`;
+ * onChange receives the merged patch. Older gateways (no model.options)
+ * degrade to the previous free-text inputs.
+ */
+function ModelPicker({ value, onChange, placeholderModel = 'gateway default' }) {
+  const { data, isLoading, error } = useModelOptions()
+
+  if (isLoading) {
+    return jsx('div', {
+      className: 'flex justify-center py-2',
+      children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
+    })
+  }
+
+  const providers = (data?.providers || []).filter(p => (p.models || []).length)
+
+  if (error || !providers.length) {
+    // Fallback: free text (older gateway or empty inventory).
+    return jsxs('div', {
+      style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
+      children: [
+        labeled(
+          'Provider',
+          jsx(Input, {
+            placeholder: 'nous / openrouter \u2026',
+            value: value.provider,
+            onChange: event => onChange({ provider: event.target.value })
+          })
+        ),
+        labeled(
+          'Model',
+          jsx(Input, {
+            placeholder: 'anthropic/claude-fable-5',
+            value: value.model,
+            onChange: event => onChange({ model: event.target.value })
+          })
+        )
+      ]
+    })
+  }
+
+  const NONE = '__default__'
+  const activeProvider = providers.find(p => p.slug === value.provider) || null
+  const models = activeProvider ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id)) : []
+
+  return jsxs('div', {
+    style: { display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '10px' },
+    children: [
+      labeled(
+        'Provider',
+        jsxs(Select, {
+          value: value.provider || NONE,
+          onValueChange: v => {
+            if (v === NONE) {
+              onChange({ provider: '', model: '' })
+            } else {
+              const prov = providers.find(p => p.slug === v)
+              const first = prov?.models?.[0]
+              onChange({
+                provider: v,
+                // Keep the model if it exists under the new provider,
+                // otherwise preselect that provider's first model.
+                model:
+                  prov && (prov.models || []).some(m => (typeof m === 'string' ? m : m.id) === value.model)
+                    ? value.model
+                    : typeof first === 'string'
+                      ? first
+                      : first?.id || ''
+              })
+            }
+          },
+          children: [
+            jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+            jsxs(SelectContent, {
+              children: [
+                jsx(SelectItem, { value: NONE, children: 'Inherit (launch profile)' }),
+                ...providers.map(p => jsx(SelectItem, { value: p.slug, children: p.slug }, p.slug))
+              ]
+            })
+          ]
+        })
+      ),
+      labeled(
+        'Model',
+        activeProvider
+          ? jsxs(Select, {
+              value: value.model || (models[0] ?? ''),
+              onValueChange: v => onChange({ model: v }),
+              children: [
+                jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+                jsx(SelectContent, {
+                  children: models.map(m => jsx(SelectItem, { value: m, children: m }, m))
+                })
+              ]
+            })
+          : jsx(Input, {
+              disabled: true,
+              placeholder: placeholderModel,
+              value: '',
+              onChange: () => undefined
+            })
+      )
+    ]
+  })
+}
+
 // ── advanced profile config (skills / toolsets / model / SOUL) ──────────────
 //
 // Shared by Edit Profile and New Agent (edit mode only for skills/toolsets —
@@ -1347,26 +1466,9 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   return jsxs('div', {
     className: 'grid gap-4',
     children: [
-      jsxs('div', {
-        style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
-        children: [
-          labeled(
-            'Provider',
-            jsx(Input, {
-              placeholder: 'nous / openrouter …',
-              value: state.provider,
-              onChange: event => setState(prev => ({ ...prev, dirtyModel: true, provider: event.target.value }))
-            })
-          ),
-          labeled(
-            'Model',
-            jsx(Input, {
-              placeholder: 'anthropic/claude-fable-5',
-              value: state.model,
-              onChange: event => setState(prev => ({ ...prev, dirtyModel: true, model: event.target.value }))
-            })
-          )
-        ]
+      jsx(ModelPicker, {
+        value: { provider: state.provider, model: state.model },
+        onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
       }),
       labeled(
         `Skills (${enabledSkills}/${state.skills.length} enabled)`,
@@ -1790,22 +1892,18 @@ function CreateAgentDialog({ open, onClose, roster }) {
                         ]
                       })
                     ),
-                    labeled(
-                      'Provider (optional)',
-                      jsx(Input, {
-                        placeholder: 'nous / openrouter / anthropic …',
-                        value: provider,
-                        onChange: event => setProvider(event.target.value)
-                      })
-                    ),
-                    labeled(
-                      'Model (optional)',
-                      jsx(Input, {
-                        placeholder: 'anthropic/claude-fable-5',
-                        value: model,
-                        onChange: event => setModel(event.target.value)
-                      })
-                    ),
+                    jsx(ModelPicker, {
+                      value: { provider, model },
+                      onChange: patch => {
+                        if ('provider' in patch) {
+                          setProvider(patch.provider)
+                        }
+                        if ('model' in patch) {
+                          setModel(patch.model)
+                        }
+                      },
+                      placeholderModel: 'inherited from launch profile'
+                    }),
                     labeled(
                       'SOUL.md (optional — replaces the generated persona)',
                       jsx(Textarea, {
