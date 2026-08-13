@@ -1075,7 +1075,11 @@ function useRoster() {
     queryKey: ROSTER_KEY,
     queryFn: () => host.request('profiles.list', {}),
     refetchInterval: 12000,
-    staleTime: 5000
+    staleTime: 5000,
+    // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
+    // retrying instead of latching a terminal error card.
+    retry: true,
+    retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
   })
 }
 
@@ -2560,8 +2564,17 @@ function RoutinesPane() {
 
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
+  const gatewayUp = useValue(host.state.gateway) === 'open'
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
+
+  // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
+  // retry immediately instead of waiting out the poll interval.
+  useEffect(() => {
+    if (gatewayUp) {
+      void refetch()
+    }
+  }, [gatewayUp, refetch])
   const roster = data?.profiles ?? []
   $lastRoster.set(roster)
   mergeServerMeta(roster)
@@ -2595,9 +2608,22 @@ function BotsPane() {
             children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
           })
         : error
-          ? jsx('div', {
-              className: 'px-3 py-4 text-xs text-(--ui-text-tertiary)',
-              children: `Roster unavailable: ${error instanceof Error ? error.message : 'gateway error'}. Restart the gateway to pick up profiles.list.`
+          ? jsxs('div', {
+              className: 'grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)',
+              children: [
+                jsx('div', {
+                  children: gatewayUp
+                    ? `Roster unavailable: ${error instanceof Error ? error.message : 'gateway error'}. If your gateway predates profiles.list, update Hermes and restart the gateway.`
+                    : 'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
+                }),
+                jsx(Button, {
+                  variant: 'secondary',
+                  size: 'sm',
+                  className: 'justify-self-start',
+                  onClick: () => void refetch(),
+                  children: 'Retry now'
+                })
+              ]
             })
           : roster.length === 0
             ? jsx(EmptyState, {
