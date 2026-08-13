@@ -95,13 +95,9 @@ function saveBotMeta(name, patch) {
   // instead (profiles.set_asset), which is server-side and uncapped by the
   // list call — so pfps follow the profile across machines too.
   try {
-    const { image, ...rest } = next[name] || {}
-    const compactPet = rest.pet ? { slug: rest.pet.slug, name: rest.pet.name } : rest.pet
+    const { image, pet, ...rest } = next[name] || {}
     host
-      .request('profiles.configure', {
-        name,
-        ui_meta: { 'hermes-bots': { ...rest, pet: compactPet } }
-      })
+      .request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } })
       .catch(() => undefined)
   } catch {
     /* older gateway */
@@ -174,9 +170,6 @@ function mergeServerMeta(roster) {
       // Local-only fields survive the server overlay.
       if (mine.image) {
         merged.image = mine.image
-      }
-      if (mine.pet?.icon && merged.pet && merged.pet.slug === mine.pet.slug) {
-        merged.pet = { ...merged.pet, icon: mine.pet.icon }
       }
 
       if (JSON.stringify(next[bot.name] || null) !== JSON.stringify(merged)) {
@@ -937,7 +930,8 @@ function PetThumb({ spriteUrl, size = 40 }) {
 
 function PetTab({ botName }) {
   const metaAll = useValue($botMeta)
-  const currentPet = metaAll[botName]?.pet || null
+  const currentPetSlug = metaAll[botName]?.petSlug || null
+  const hasImage = Boolean(metaAll[botName]?.image)
   const { data, isLoading } = useQuery({
     queryKey: [ID, 'pet-gallery'],
     queryFn: () => host.request('pet.gallery', {}),
@@ -987,7 +981,7 @@ function PetTab({ botName }) {
     children: [
       jsx('div', {
         className: 'text-center text-[0.65rem] text-(--ui-text-quaternary)',
-        children: 'A companion that lives beside this agent and bounces while it works.'
+        children: 'Pick a pet as this agent’s profile picture.'
       }),
       jsx(Input, {
         className: 'h-7 text-xs',
@@ -998,14 +992,14 @@ function PetTab({ botName }) {
           setLimit(24)
         }
       }),
-      currentPet
+      hasImage && currentPetSlug
         ? jsx(Button, {
             type: 'button',
             variant: 'ghost',
             size: 'sm',
             className: 'justify-center',
-            onClick: () => saveBotMeta(botName, { pet: null }),
-            children: `Remove pet (${currentPet.name || currentPet.slug})`
+            onClick: () => saveBotMeta(botName, { image: null, petSlug: null }),
+            children: 'Remove — back to shape avatar'
           })
         : null,
       filtered.length === 0
@@ -1030,16 +1024,19 @@ function PetTab({ botName }) {
                       type: 'button',
                       className: cn(
                         'grid justify-items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-(--chrome-action-hover)',
-                        currentPet?.slug === pet.slug && 'ring-1 ring-(--ui-accent)'
+                        currentPetSlug === pet.slug && hasImage && 'ring-1 ring-(--ui-accent)'
                       ),
                       onClick: () => {
-                        // Persist the SMALL extracted frame-0 icon, not the
-                        // 2MB sheet URL — roster rows stay instant + offline.
-                        void petFrameIcon(pet.spritesheetUrl).then(icon =>
-                          saveBotMeta(botName, {
-                            pet: { slug: pet.slug, name: pet.displayName, icon: icon || null }
-                          })
-                        )
+                        // The pet IS the profile picture: extract frame 0
+                        // (small data URL) and set it as the avatar image —
+                        // saveBotMeta syncs it to the profile asset store.
+                        void petFrameIcon(pet.spritesheetUrl).then(icon => {
+                          if (icon) {
+                            saveBotMeta(botName, { image: icon, petSlug: pet.slug })
+                          } else {
+                            host.notify({ kind: 'error', message: 'Could not load that pet — try another.' })
+                          }
+                        })
                       },
                       children: [
                         jsx(PetThumb, { spriteUrl: pet.spritesheetUrl, size: 40 }),
@@ -1062,44 +1059,6 @@ function PetTab({ botName }) {
             ]
           })
     ]
-  })
-}
-
-/** The pet living beside the avatar in a roster row — bobs while working. */
-function PetBadge({ pet, working }) {
-  const src = pet?.icon || null
-
-  // Legacy saves stored the full sheet URL — extract the frame lazily once.
-  const [legacyIcon, setLegacyIcon] = useState(null)
-  useEffect(() => {
-    if (!src && pet?.sprite) {
-      let alive = true
-      petFrameIcon(pet.sprite).then(url => alive && setLegacyIcon(url))
-      return () => {
-        alive = false
-      }
-    }
-    return undefined
-  }, [src, pet?.sprite])
-
-  const finalSrc = src || legacyIcon
-  if (!finalSrc) {
-    return null
-  }
-
-  return jsx('img', {
-    src: finalSrc,
-    alt: pet.name || 'pet',
-    title: pet.name || 'pet',
-    style: {
-      width: 18,
-      height: 18,
-      objectFit: 'contain',
-      imageRendering: 'pixelated',
-      borderRadius: 4,
-      alignSelf: 'flex-end',
-      animation: working ? 'hermes-bots-bob 0.55s ease-in-out infinite alternate' : 'none'
-    }
   })
 }
 
@@ -1216,12 +1175,9 @@ function BotRow({ bot, onEdit }) {
       isActive && 'bg-(--chrome-action-hover)'
     ),
     children: [
-      jsxs('div', {
-        className: 'flex shrink-0 items-end gap-0.5',
-        children: [
-          jsx(BotFace, { shape, color, image, size: 34, name: bot.name, mood: botMood }),
-          jsx(PetBadge, { pet: meta?.pet, working: botMood === 'work' })
-        ]
+      jsx('div', {
+        className: 'shrink-0',
+        children: jsx(BotFace, { shape, color, image, size: 34, name: bot.name, mood: botMood })
       }),
       jsxs('div', {
         className: 'min-w-0 flex-1',
