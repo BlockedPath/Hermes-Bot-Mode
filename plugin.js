@@ -90,11 +90,10 @@ function saveBotMeta(name, patch) {
   // Server-side (source of truth when supported): profile.yaml ui_meta,
   // namespaced under this plugin's id — every client machine sees the same
   // roster. Older gateways reject the param shape; that's fine, local wins.
-  // IMPORTANT: strip data-URL fields (uploaded/generated avatar image, pet
-  // icon) — ui_meta is capped at 64KB server-side because it rides every
-  // profiles.list, and a 256px PNG data URL alone blows that. Those stay in
-  // local plugin storage; only compact fields (shape/color/title/pet
-  // selection) sync.
+  // Data-URL fields are stripped from ui_meta (64KB cap, rides every
+  // profiles.list); the avatar IMAGE goes to the profile asset store
+  // instead (profiles.set_asset), which is server-side and uncapped by the
+  // list call — so pfps follow the profile across machines too.
   try {
     const { image, ...rest } = next[name] || {}
     const compactPet = rest.pet ? { slug: rest.pet.slug, name: rest.pet.name } : rest.pet
@@ -106,6 +105,53 @@ function saveBotMeta(name, patch) {
       .catch(() => undefined)
   } catch {
     /* older gateway */
+  }
+
+  // Avatar image → profile asset store (feature-detected; local storage
+  // remains the fallback rendering source on older gateways).
+  if ('image' in patch) {
+    try {
+      const req = patch.image
+        ? host.request('profiles.set_asset', { name, asset: 'avatar', data: patch.image })
+        : host.request('profiles.set_asset', { name, asset: 'avatar', clear: true })
+      req.catch(() => undefined)
+    } catch {
+      /* older gateway */
+    }
+  }
+}
+
+/** Fetch server-side avatars for roster rows flagged has_avatar when the
+ *  local cache doesn't already have an image for them. Fire-and-forget. */
+const avatarFetchInflight = new Set()
+
+function pullServerAvatars(roster) {
+  for (const bot of roster) {
+    if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
+      continue
+    }
+
+    if ($botMeta.get()[bot.name]?.image) {
+      continue
+    }
+
+    avatarFetchInflight.add(bot.name)
+    host
+      .request('profiles.get_asset', { name: bot.name, asset: 'avatar' })
+      .then(res => {
+        if (res?.found && res.data) {
+          const current = $botMeta.get()
+          $botMeta.set({ ...current, [bot.name]: { ...(current[bot.name] || {}), image: res.data } })
+
+          try {
+            Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', $botMeta.get())).catch(() => undefined)
+          } catch {
+            /* no storage */
+          }
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => avatarFetchInflight.delete(bot.name))
   }
 }
 
@@ -2207,6 +2253,7 @@ function BotsPane() {
   const roster = data?.profiles ?? []
   $lastRoster.set(roster)
   mergeServerMeta(roster)
+  pullServerAvatars(roster)
 
   return jsxs('div', {
     className: 'flex h-full flex-col',
