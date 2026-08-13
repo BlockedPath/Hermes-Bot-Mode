@@ -4,10 +4,7 @@ A desktop plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent
 
 ![Hermes Agent desktop plugin](https://img.shields.io/badge/hermes-desktop%20plugin-8b5cf6) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-<p align="center">
-  <img src="docs/bots-pane.png" alt="Bots roster pane — one row per agent with avatar, preview, and timestamp" width="46%" />
-  <img src="docs/cronjobs-pane.png" alt="Cronjobs pane — recurring tasks per agent" width="26%" />
-</p>
+<img width="2525" height="1814" alt="image" src="https://github.com/user-attachments/assets/63c1e177-d098-42c4-999e-64cfaa493024" />
 
 ## What you get
 
@@ -34,9 +31,17 @@ No core patches, no background daemons, no extra storage: everything is standard
 
 ## Screenshots
 
-| New Agent | Advanced profile config | Pet avatars | New Cronjob |
-| --- | --- | --- | --- |
-| ![New Agent dialog — avatar tabs, shape grid, colors, name/title/description](docs/new-agent.png) | ![Advanced — clone-from, provider/model, SOUL.md, skills](docs/new-agent-advanced.png) | ![Pet tab — searchable petdex gallery as profile pictures](docs/pet-avatars.png) | ![New Cronjob — guided schedule picker with run cap and live summary](docs/new-cronjob.png) |
+| New Agent 
+
+<img width="745" height="999" alt="image" src="https://github.com/user-attachments/assets/a1fc78bf-d8f8-4591-87c9-3f9ef06ac365" />
+
+| PetDex avatars 
+
+<img width="955" height="783" alt="image" src="https://github.com/user-attachments/assets/2a686fd2-45c5-44c0-86b5-7e2a4f7acd49" />
+
+| Agent 2 Agent Communications
+
+<img width="1313" height="612" alt="image" src="https://github.com/user-attachments/assets/c45b1e96-4362-4462-a049-ba8c44b87bed" />
 
 ## Install
 
