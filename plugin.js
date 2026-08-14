@@ -1142,11 +1142,13 @@ function composeSoul({ name, title, description, roster, customSoul }) {
     'To message a teammate, deliver into THEIR inbox via the terminal:',
     '',
     '```',
-    'hermes -p <agent-name> chat -c "Agent Inbox" -q "[Message from agent \'' + name + '\'] your message"',
+    'hermes -p <agent-name> chat --in ~ -c "Agent Inbox" -q "[Message from agent \'' + name + '\'] your message"',
     '```',
     '',
-    '(`-c "Agent Inbox"` appends to that named conversation, creating it on',
-    'first use — never a throwaway session. Always open with the',
+    '(`--in ~ -c "Agent Inbox"` appends to that ONE named conversation in the',
+    'home workspace, creating it on first use — never a throwaway session and',
+    'never a duplicate (without `--in ~` the -c lookup is scoped to your',
+    'current directory and silently creates a second inbox). Open with the',
     "[Message from agent '" + name + "'] prefix so they know who is talking.)",
     'Their reply prints to stdout — relay the relevant part back to the user,',
     'and mention it came from that agent.',
@@ -2805,7 +2807,7 @@ export default {
 
           const note =
             `\n\n[@mention handoff: deliver the message above to ${mentioned.map(n => `agent '${n}'`).join(' and ')} ` +
-            `via \`hermes -p <agent> chat -c "Agent Inbox" -q "..."\` (prefix it "[Message from agent '<your-name>']"), ` +
+            `via \`hermes -p <agent> chat --in ~ -c "Agent Inbox" -q "..."\` (prefix it "[Message from agent '<your-name>']"), ` +
             `wait for the reply, and report it back.]`
 
           return { ...draft, text: text + note }
