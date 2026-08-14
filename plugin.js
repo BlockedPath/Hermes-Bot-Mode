@@ -2208,6 +2208,10 @@ function EditProfileDialog({ bot, open, onClose }) {
     onOpenChange: value => !value && !busy && onClose(),
     children: jsxs(DialogContent, {
       className: advanced ? 'max-w-3xl' : 'max-w-sm',
+      // Same resizable-window treatment as the create dialog.
+      style: advanced
+        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2460,6 +2464,12 @@ function CreateAgentDialog({ open, onClose, roster }) {
     },
     children: jsxs(DialogContent, {
       className: advanced ? 'max-w-3xl' : 'max-w-md',
+      // Native resize handle (bottom-right corner): the dialog becomes a
+      // window the user can grow/shrink. overflow:auto is required for CSS
+      // resize to engage; caps keep it on screen.
+      style: advanced
+        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
