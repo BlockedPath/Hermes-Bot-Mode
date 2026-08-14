@@ -1786,7 +1786,15 @@ function AdvancedProfileConfig({ bot, state, setState }) {
               style: { maxHeight: 180 },
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
             }),
-            jsx(HubSkillsSection, { forProfile: bot })
+            jsx(HubSkillsSection, {
+              forProfile: bot,
+              onInstalled: name =>
+                setState(prev =>
+                  prev.skills.some(s => s.name === name)
+                    ? prev
+                    : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
+                )
+            })
           ]
         })
       ),
@@ -1814,7 +1822,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 
 // ── skills hub section (search + install, shared by create/edit dialogs) ────
 
-function HubSkillsSection({ forProfile }) {
+function HubSkillsSection({ forProfile, onInstalled }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
@@ -1859,6 +1867,10 @@ function HubSkillsSection({ forProfile }) {
       })
       setInstalled(prev => ({ ...prev, [name]: true }))
       host.notify({ kind: 'success', message: `Skill "${name}" installed` })
+
+      if (typeof onInstalled === 'function') {
+        onInstalled(name)
+      }
     } catch (err) {
       host.notifyError(err, `Installing "${name}" failed`)
     } finally {
@@ -1869,9 +1881,21 @@ function HubSkillsSection({ forProfile }) {
   return jsxs('div', {
     className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
     children: [
-      jsx('div', {
-        className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
-        children: 'Skills Hub'
+      jsxs('div', {
+        className: 'flex items-baseline justify-between gap-2',
+        children: [
+          jsx('div', {
+            className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
+            children: 'Skills Hub'
+          }),
+          jsx('a', {
+            className: 'text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
+            href: 'https://hermes-agent.nousresearch.com/skills',
+            rel: 'noreferrer',
+            target: '_blank',
+            children: 'browse the full hub ↗'
+          })
+        ]
       }),
       jsxs('div', {
         className: 'flex gap-1.5',
@@ -1897,6 +1921,12 @@ function HubSkillsSection({ forProfile }) {
           })
         ]
       }),
+      searching
+        ? jsx('div', {
+            className: 'px-1 text-[0.65rem] text-(--ui-text-quaternary)',
+            children: 'Searching community + well-known sources — can take ~10s…'
+          })
+        : null,
       results === null
         ? null
         : results.length === 0
@@ -1929,14 +1959,16 @@ function HubSkillsSection({ forProfile }) {
                         installed[r.name]
                           ? jsx('span', {
                               className: 'shrink-0 text-[0.65rem] text-(--ui-text-tertiary)',
-                              children: 'Installed ✓'
+                              children: '✓ added'
                             })
                           : jsx(Button, {
                               size: 'sm',
                               variant: 'ghost',
+                              className: 'shrink-0 px-2 font-semibold',
                               disabled: installing !== null,
+                              title: `Install "${r.name}" and add it to the list above`,
                               onClick: () => void install(r.name),
-                              children: installing === r.name ? 'Installing…' : 'Install'
+                              children: installing === r.name ? '…' : '+'
                             })
                       ]
                     },
@@ -2511,9 +2543,9 @@ function CreateAgentDialog({ open, onClose, roster }) {
                               ]
                             }),
                             jsx('div', {
-                              className: '-mt-2 pl-6 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                              className: 'pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)',
                               children:
-                                'Subscriptions, OAuth logins, and API keys stay SHARED (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.'
+                                'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.'
                             }),
                             jsxs('label', {
                               className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
@@ -2572,7 +2604,15 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                       className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
                                       children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
                                     }),
-                                    jsx(HubSkillsSection, { forProfile: null })
+                                    jsx(HubSkillsSection, {
+                                      forProfile: null,
+                                      onInstalled: name =>
+                                        setCaps(prev =>
+                                          !prev || prev.skills.some(s => s.name === name)
+                                            ? prev
+                                            : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
+                                        )
+                                    })
                                   ]
                                 })
                             : advTab === 'toolsets'
