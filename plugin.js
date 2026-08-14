@@ -2462,6 +2462,59 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   })
 }
 
+function ProfilePane() {
+  const selected = useValue($selectedBot)
+  const activeProfile = useValue(host.state.profile)
+  const name = (activeProfile || selected || 'default').trim() || 'default'
+  const meta = useValue($botMeta)[name]
+  const [editing, setEditing] = useState(false)
+  const { data, isLoading } = useQuery({
+    queryKey: [ID, 'profile-summary', name],
+    queryFn: () => host.request('profiles.describe', { name }),
+    staleTime: 120000,
+    retry: false
+  })
+  const { shape, color, image } = botAppearance(name, meta)
+  const summary = [
+    ['Provider', data?.model?.provider || 'Inherit'],
+    ['Model', data?.model?.default || 'Gateway default'],
+    ['Description', data?.description || meta?.title || 'No description']
+  ]
+  const enabledSkills = (data?.skills || []).filter(skill => skill.enabled).map(skill => skill.name)
+  const enabledTools = (data?.toolsets || []).filter(toolset => toolset.enabled).map(toolset => toolset.name)
+
+  return jsxs('div', {
+    className: 'flex h-full flex-col',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-2 px-3 pt-3 pb-2',
+        children: [
+          jsx(BotFace, { shape, color, image, size: 32, name }),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsx('div', { className: 'truncate text-sm font-medium', children: displayName({ name, title: meta?.title }) }),
+              jsx('div', { className: 'truncate text-xs text-(--ui-text-tertiary)', children: name })
+            ]
+          })
+        ]
+      }),
+      jsx('div', { className: 'mx-3 border-t border-(--ui-stroke-secondary)' }),
+      isLoading
+        ? jsx('div', { className: 'flex flex-1 items-center justify-center', children: jsx(GlyphSpinner, { spinner: 'breathe' }) })
+        : jsxs('div', {
+            className: 'grid flex-1 content-start gap-3 overflow-auto px-3 py-3 text-xs',
+            children: [
+              ...summary.map(([label, value]) => jsxs('div', { className: 'grid gap-0.5', children: [jsx('span', { className: 'text-(--ui-text-quaternary)', children: label }), jsx('span', { className: 'break-words text-(--ui-text-secondary)', children: value })] }, label)),
+              jsx('div', { className: 'grid gap-1', children: [jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Skills' }), jsx('span', { className: 'break-words text-(--ui-text-secondary)', children: enabledSkills.join(', ') || 'None enabled' })] }),
+              jsx('div', { className: 'grid gap-1', children: [jsx('span', { className: 'text-(--ui-text-quaternary)', children: 'Tools' }), jsx('span', { className: 'break-words text-(--ui-text-secondary)', children: enabledTools.join(', ') || 'None enabled' })] })
+            ]
+          }),
+      jsx('div', { className: 'border-t border-(--ui-stroke-secondary) p-2', children: jsx(Button, { className: 'w-full justify-center', variant: 'secondary', onClick: () => setEditing(true), children: 'Edit Profile' }) }),
+      jsx(EditProfileDialog, { bot: { name, title: meta?.title || '', description: data?.description || '' }, open: editing, onClose: () => setEditing(false) })
+    ]
+  })
+}
 function RoutinesPane() {
   const selected = useValue($selectedBot)
   const gatewayProfile = useValue(host.state.profile)
@@ -2729,6 +2782,17 @@ export default {
       render: () => jsx(RoutinesPane, {})
     })
 
+    ctx.register({
+      id: 'profile',
+      area: 'panes',
+      title: 'Profile',
+      data: {
+        placement: 'main',
+        dock: { pane: 'routines', pos: 'right' },
+        width: '272px'
+      },
+      render: () => jsx(ProfilePane, {})
+    })
     ctx.register({
       id: 'new-agent',
       area: PALETTE_AREA,
