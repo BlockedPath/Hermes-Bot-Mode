@@ -1083,16 +1083,16 @@ function useRoster() {
   })
 }
 
-function showsHandle(name, meta) {
-  // Never advertise '@default' — the point of presenting the primary
-  // profile as Hermes is that users stop seeing the word 'default'.
-  // (@mentions/CLI for it are rarely needed; it's the profile you're in.)
-  if ((name || '').trim().toLowerCase() === 'default') {
-    return false
-  }
+/** The @handle users tag a bot with. The primary profile's callable alias
+ *  is 'hermes' — the mention middleware resolves it back to 'default' — so
+ *  the word 'default' never surfaces in the UI. */
+function botHandle(name) {
+  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+}
 
-  const title = meta?.title?.trim()
-  return Boolean(name && title && name.toLowerCase() !== title.toLowerCase())
+function showsHandle(name, meta) {
+  const display = displayName({ name }, meta)
+  return Boolean(name && display.toLowerCase() !== botHandle(name).toLowerCase())
 }
 
 function displayName(bot, meta) {
@@ -1224,7 +1224,7 @@ function BotRow({ bot, onEdit }) {
                   showsHandle(bot.name, meta)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
-                        children: `@${bot.name}`
+                        children: `@${botHandle(bot.name)}`
                       })
                     : null
                 ]
@@ -2514,7 +2514,7 @@ function RoutinesPane() {
                   showsHandle(bot, meta)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
-                        children: `@${bot}`
+                        children: `@${botHandle(bot)}`
                       })
                     : null
                 ]
@@ -2786,7 +2786,14 @@ export default {
 
           const mentioned = []
           for (const match of text.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
-            const name = match[2].toLowerCase()
+            let name = match[2].toLowerCase()
+
+            // '@hermes' is the primary profile's alias (the UI never says
+            // 'default') — accept it unless a real 'hermes' profile exists.
+            if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
+              name = 'default'
+            }
+
             if (names.includes(name) && !mentioned.includes(name)) {
               mentioned.push(name)
             }
