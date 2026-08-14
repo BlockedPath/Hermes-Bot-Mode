@@ -2891,6 +2891,19 @@ function BotsPane() {
     mergeServerMeta(live)
     pullServerAvatars(live)
     trackInboundActivity(live)
+
+    // Pre-dial each bot's gateway socket so the first click doesn't pay
+    // the backend spawn + connect cost (SDK door from hermes-agent#85954;
+    // feature-detected — absent on older desktops, harmless to skip).
+    if (typeof host.warmProfile === 'function') {
+      for (const bot of live) {
+        try {
+          host.warmProfile(bot.name)
+        } catch {
+          /* warm is best-effort */
+        }
+      }
+    }
   }
 
   const staleNotice = error && !live && roster.length
