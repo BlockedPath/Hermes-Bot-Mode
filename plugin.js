@@ -1980,11 +1980,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
 // ── routines (cron) ──────────────────────────────────────────────────────────
 //
-// One "On a schedule" trigger for now. Jobs are namespaced
-// "[bot:<name>] <routine>"; the prompt runs the routine AS the bot
-// (hermes -p <bot> chat -c "Routine: …"), so runs land in that bot's own
+// Jobs are namespaced "[bot:<name>] <routine>". A job running in the active
+// bot profile uses the plain instruction; a different profile keeps the
+// hermes -p <bot> chat delegation wrapper so the run reaches that bot's
 // history. The tile follows the bot you're chatting with (gateway profile).
-
 const BOT_TAG_RE = /^\[bot:([a-z0-9][a-z0-9_-]*)\]\s*/i
 
 function routineBot(job) {
@@ -2005,7 +2004,15 @@ function useRoutines() {
   })
 }
 
-function routinePrompt(bot, title, instruction) {
+function normalizedProfileName(profile) {
+  return typeof profile === 'string' ? profile.trim().toLowerCase() : ''
+}
+
+function routinePrompt(bot, title, instruction, activeProfile) {
+  if (normalizedProfileName(bot) && normalizedProfileName(bot) === normalizedProfileName(activeProfile)) {
+    return instruction
+  }
+
   return (
     `You are running the scheduled routine "${title}" for agent '${bot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
@@ -2013,7 +2020,6 @@ function routinePrompt(bot, title, instruction) {
     `If the command fails, report the error instead.`
   )
 }
-
 function scheduleLabel(schedule) {
   const once = /^once in (.+)$/.exec(schedule || '')
 
@@ -2347,6 +2353,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   const [sched, setSched] = useState(defaultScheduleState())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const activeProfile = useValue(host.state.profile)
   const schedule = composeSchedule(sched)
 
   const reset = () => {
@@ -2377,7 +2384,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         action: 'add',
         name: `[bot:${bot}] ${title}`,
         schedule: schedule.trim(),
-        prompt: routinePrompt(bot, title, task),
+        prompt: routinePrompt(bot, title, task, activeProfile),
         ...(repeatN ? { repeat: repeatN } : {})
       })
       queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
