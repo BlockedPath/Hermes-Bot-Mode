@@ -10,9 +10,9 @@
  * Right tile "Routines": scheduled tasks (Hermes cron jobs) scoped to the
  * bot you're currently chatting with — follows the live gateway profile.
  *
- * Bots message each other via each bot's persistent "Agent Inbox" chat
- * (`hermes -p <bot> chat -c "Agent Inbox" -q ...`); @-mentions in any chat
- * become explicit handoffs via composer middleware.
+ * Bots message each other straight into each bot's ONE canonical "Bot
+ * Chat" — @-mentions deliver over gateway RPCs (no CLI relay), and
+ * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
 import {
@@ -1196,30 +1196,27 @@ function messagingProtocolSection(name, roster) {
   return [
     '## Messaging other agents',
     '',
-    'You work alongside other named agents. Every agent (including you) has a',
-    'persistent chat titled "Agent Inbox" where agent-to-agent messages land.',
-    'To message a teammate, deliver into THEIR inbox via the terminal:',
+    'You work alongside other named agents. Every agent (including you) has',
+    'ONE canonical conversation titled "Bot Chat" — created with the agent,',
+    'so it always exists. Agent-to-agent messages are delivered straight',
+    'into it, like a DM. To message a teammate, run:',
     '',
     '```',
-    'hermes -p <agent-name> chat --in ~ -c "Agent Inbox" -q "[Message from agent \'' + name + '\'] your message"',
+    'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ': your message"',
     '```',
     '',
-    '(`--in ~ -c "Agent Inbox"` appends to that ONE named conversation in',
-    'the home workspace — never a throwaway session, never a duplicate.',
-    'FIRST CONTACT: `-c` only RESUMES an existing session ("No session found',
-    'matching \'Agent Inbox\'" means it does not exist yet). Bootstrap it once:',
-    'send via a quiet one-shot instead (`hermes -p <agent-name> chat --in ~',
-    '-Q -q "..."`), then rename that new session to "Agent Inbox":',
-    '`hermes -p <agent-name> sessions rename <session-id> "Agent Inbox"`',
-    '(the id is in `hermes -p <agent-name> sessions list`). Every later',
-    'message uses the normal -c form. Open with the',
-    "[Message from agent '" + name + "'] prefix so they know who is talking.)",
-    'Their reply prints to stdout — relay the relevant part back to the user,',
-    'and mention it came from that agent.',
+    '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
+    'workspace. `-Q` keeps output clean. Always open with the',
+    '"Message from \uD83E\uDD16 ' + name + ':" prefix so they know who is talking.',
+    'Their reply prints to stdout — relay the relevant part back to the',
+    'user, and say which agent it came from. In the rare case the target',
+    'has no "Bot Chat" yet, send once WITHOUT -c, then',
+    '`hermes -p <agent-name> sessions rename <session-id> "Bot Chat"`.)',
     '',
-    'If a message in YOUR chat starts with "[Message from agent \'<name>\']",',
-    'it is a teammate messaging you, not the user. Answer it directly; if a',
-    'reply back is needed, use the same command aimed at their inbox.',
+    'If a message in YOUR chat starts with "Message from \uD83E\uDD16 <name>", it is',
+    'a teammate messaging you, not the user. Answer it directly — your reply',
+    'reaches them via their own delivery — and use the same command if you',
+    'need to start a conversation yourself.',
     '',
     'When the user writes @<agent-name> or says "ask <name> to ..." /',
     '"tell <name> ...", that is a handoff: message that agent, wait for the',
@@ -2938,30 +2935,28 @@ export default {
             return draft
           }
 
-          let names = []
+          let profiles = []
           try {
             const res = await host.request('profiles.list', { include_sessions: false })
-            names = (res?.profiles ?? []).map(p => p.name)
+            profiles = res?.profiles ?? []
           } catch {
             return draft
           }
 
-          // Strip fenced blocks and inline code before scanning: @words in
-          // code are code, not handoffs (#20). Offsets shift, so scan the
-          // stripped copy — mention names are all we need.
+          const names = profiles.map(p => p.name)
+          // Mentions in code are code, not handoffs (#20).
           const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
-
+          const active = (host.state.profile.get() || 'default').trim() || 'default'
           const mentioned = []
+
           for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
             let name = match[2].toLowerCase()
 
-            // '@hermes' is the primary profile's alias (the UI never says
-            // 'default') — accept it unless a real 'hermes' profile exists.
             if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
               name = 'default'
             }
 
-            if (names.includes(name) && !mentioned.includes(name)) {
+            if (names.includes(name) && name !== active && !mentioned.includes(name)) {
               mentioned.push(name)
             }
           }
@@ -2970,14 +2965,65 @@ export default {
             return draft
           }
 
+          // Grok-bots delivery: the plugin drops the message straight into
+          // each mentioned bot's canonical chat over the gateway — no
+          // terminal relay, no CLI spam in either chat. The recipient's
+          // chat shows "Message from 🤖 <sender>" and its reply; if that
+          // chat is open it streams live.
+          const senderMeta = $botMeta.get()[active]
+          const sender = displayName({ name: active, title: senderMeta?.title }, senderMeta)
+          const cleaned = text.replace(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi, (m, pre, n) => pre + botHandle(n)).trim()
+
+          for (const target of mentioned) {
+            void (async () => {
+              try {
+                let sid = $botMeta.get()[target]?.chat
+
+                if (!sid) {
+                  const rows = await host.request('session.list', { profile: target, limit: 50 })
+                  sid = (rows?.sessions ?? []).find(s => s.title === 'Bot Chat')?.id || null
+                }
+
+                if (!sid) {
+                  sid = await createCanonicalChat(target)
+                }
+
+                if (!sid) {
+                  throw new Error('no canonical chat')
+                }
+
+                const resumed = await host.request('session.resume', { session_id: sid, profile: target, omit_messages: true })
+                const runtime = resumed?.session_id
+
+                if (!runtime) {
+                  throw new Error('could not open the chat')
+                }
+
+                await host.request('prompt.submit', {
+                  session_id: runtime,
+                  text: 'Message from \uD83E\uDD16 ' + sender + ': ' + cleaned
+                })
+                const targetMeta = $botMeta.get()[target]
+                host.notify({
+                  kind: 'success',
+                  title: 'Message delivered',
+                  message: 'Sent to ' + displayName({ name: target, title: targetMeta?.title }, targetMeta) + ' — the reply lands in their chat.'
+                })
+              } catch (err) {
+                host.notifyError(err, 'Could not deliver to @' + botHandle(target))
+              }
+            })()
+          }
+
+          // The active bot still sees the user's message, minus relay duty —
+          // just tell it the delivery already happened.
           const note =
-            `\n\n[@mention handoff: deliver the message above to ${mentioned.map(n => `agent '${n}'`).join(' and ')} ` +
-            `via \`hermes -p <agent> chat --in ~ -c "Agent Inbox" -q "..."\` (prefix it "[Message from agent '<your-name>']"), ` +
-            `wait for the reply, and report it back.]`
+            '\n\n[Note: the @-mentioned agent' + (mentioned.length > 1 ? 's were' : ' was') +
+            ' already messaged directly (' + mentioned.map(botHandle).join(', ') + ') — their replies arrive in their own chats. ' +
+            'Do NOT relay this message yourself; just handle anything addressed to you.]'
 
           return { ...draft, text: text + note }
-        }
-      }
+        }      }
     })
   }
 }
