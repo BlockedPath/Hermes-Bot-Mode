@@ -1820,7 +1820,15 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   })
 }
 
-// ── skills hub section (search + install, shared by create/edit dialogs) ────
+// ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
+// https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
+// docs chrome and adds "+ Add to this Agent" per card, posting
+// {type: 'hermes-skill-pick', ...} to us (hermes-agent#86243). We validate
+// the origin, install via skills.manage, and bubble onInstalled so the
+// checklist above gains the row. Search-box fallback kept for offline use.
+
+const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
 
 function HubSkillsSection({ forProfile, onInstalled }) {
   const [query, setQuery] = useState('')
@@ -1828,6 +1836,38 @@ function HubSkillsSection({ forProfile, onInstalled }) {
   const [searching, setSearching] = useState(false)
   const [installing, setInstalling] = useState(null)
   const [installed, setInstalled] = useState({})
+  const [browseHub, setBrowseHub] = useState(false)
+  const installRef = useRef(null)
+
+  // Picker messages from the embedded hub page. Origin-checked; installs
+  // route through the same install() the search fallback uses.
+  useEffect(() => {
+    if (!browseHub) {
+      return undefined
+    }
+
+    const onMessage = event => {
+      if (event.origin !== HUB_ORIGIN) {
+        return
+      }
+
+      const data = event.data
+
+      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+        return
+      }
+
+      const target = String(data.identifier || data.name)
+
+      if (installRef.current) {
+        void installRef.current(target, String(data.name))
+      }
+    }
+
+    window.addEventListener('message', onMessage)
+
+    return () => window.removeEventListener('message', onMessage)
+  }, [browseHub])
 
   const search = async () => {
     const q = query.trim()
@@ -1849,12 +1889,14 @@ function HubSkillsSection({ forProfile, onInstalled }) {
     }
   }
 
-  const install = async name => {
+  const install = async (name, displayName) => {
+    const label = displayName || name
+
     if (installing) {
       return
     }
 
-    setInstalling(name)
+    setInstalling(label)
 
     try {
       // With forProfile the install lands in that bot's skills dir
@@ -1865,18 +1907,20 @@ function HubSkillsSection({ forProfile, onInstalled }) {
         query: name,
         ...(forProfile ? { profile: forProfile } : {})
       })
-      setInstalled(prev => ({ ...prev, [name]: true }))
-      host.notify({ kind: 'success', message: `Skill "${name}" installed` })
+      setInstalled(prev => ({ ...prev, [label]: true }))
+      host.notify({ kind: 'success', message: `Skill "${label}" installed` })
 
       if (typeof onInstalled === 'function') {
-        onInstalled(name)
+        onInstalled(label)
       }
     } catch (err) {
-      host.notifyError(err, `Installing "${name}" failed`)
+      host.notifyError(err, `Installing "${label}" failed`)
     } finally {
       setInstalling(null)
     }
   }
+
+  installRef.current = install
 
   return jsxs('div', {
     className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
@@ -1888,15 +1932,40 @@ function HubSkillsSection({ forProfile, onInstalled }) {
             className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
             children: 'Skills Hub'
           }),
-          jsx('a', {
+          jsx('button', {
+            type: 'button',
             className: 'text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
-            href: 'https://hermes-agent.nousresearch.com/skills',
-            rel: 'noreferrer',
-            target: '_blank',
-            children: 'browse the full hub ↗'
+            onClick: () => setBrowseHub(v => !v),
+            children: browseHub ? 'hide the hub browser' : 'browse the full hub ▾'
           })
         ]
       }),
+      browseHub
+        ? jsxs('div', {
+            className: 'grid gap-1',
+            children: [
+              jsx('iframe', {
+                src: HUB_PICKER_URL,
+                title: 'Hermes Skills Hub',
+                style: {
+                  width: '100%',
+                  height: 420,
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 8,
+                  background: 'transparent'
+                },
+                sandbox: 'allow-scripts allow-same-origin'
+              }),
+              jsx('div', {
+                className: 'px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                children:
+                  installing
+                    ? `Installing "${installing}"…`
+                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.'
+              })
+            ]
+          })
+        : null,
       jsxs('div', {
         className: 'flex gap-1.5',
         children: [
