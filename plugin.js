@@ -1095,6 +1095,85 @@ function showsHandle(name, meta) {
   return Boolean(name && display.toLowerCase() !== botHandle(name).toLowerCase())
 }
 
+// ── canonical bot chat ───────────────────────────────────────────────────────
+// Each bot has ONE forever chat, pinned by stored-session id in bot meta
+// (meta.chat — synced server-side via ui_meta, so it follows the profile).
+// Opening a bot ALWAYS lands there: never "most recent session", which
+// drifts whenever the profile is used from the CLI, Sessions mode, or a
+// cronjob. The pin only changes through explicit adoption:
+//   - grandfather: first open of a bot that already has history pins its
+//     current latest session, so continuity starts from the chat in use
+//   - fresh bot: opens a draft; when the first message persists a stored
+//     session, we adopt that id (empty sessions are pruned server-side, so
+//     pre-creating one at enable time is not possible)
+//   - recovery: if the pinned id vanishes from the DB (compaction rewrote
+//     the lineage), re-pin the newest session carrying the canonical title.
+
+let adoptWatcher = null
+
+function cancelAdoption() {
+  if (adoptWatcher) {
+    adoptWatcher.off()
+    adoptWatcher = null
+  }
+}
+
+/** Arm a one-shot watcher: when the fresh draft for `name` becomes a real
+ *  session (first message sent), pin its stored id as the bot's chat. */
+function armChatAdoption(name) {
+  cancelAdoption()
+
+  const startedAt = Date.now()
+  const off = host.state.activeSessionId.listen(runtime => {
+    if (!runtime) {
+      return
+    }
+
+    // Only adopt while the user is still on this bot and within the arm
+    // window — a runtime id appearing later belongs to something else.
+    if ($selectedBot.get() !== name || Date.now() - startedAt > 30 * 60 * 1000) {
+      cancelAdoption()
+      return
+    }
+
+    // The stored id lags the runtime id by the persistence write; settle,
+    // then take the profile's most recent stored session as the adoptee.
+    window.setTimeout(async () => {
+      try {
+        const res = await host.request('session.most_recent', { profile: name })
+        const sid = res?.id || res?.session_id
+
+        if (sid && !$botMeta.get()[name]?.chat) {
+          saveBotMeta(name, { chat: sid })
+        }
+      } catch {
+        // Older gateway or nothing persisted yet — the next open retries.
+      }
+    }, 1500)
+    cancelAdoption()
+  })
+
+  adoptWatcher = { off }
+}
+
+/** Resolve which session a bot row should open. Returns
+ *  {id} to resume, or null for a fresh draft (+ adoption). */
+function canonicalChatTarget(bot, meta) {
+  const pinned = meta?.chat
+
+  if (pinned) {
+    return { id: pinned }
+  }
+
+  // Grandfather: existing bots keep the chat they have been using.
+  if (bot.last_session?.id) {
+    saveBotMeta(bot.name, { chat: bot.last_session.id })
+    return { id: bot.last_session.id }
+  }
+
+  return null
+}
+
 function displayName(bot, meta) {
   if (meta?.title?.trim()) {
     return meta.title.trim()
@@ -1184,16 +1263,37 @@ function BotRow({ bot, onEdit }) {
   const gatewayState = useValue(host.state.gateway)
   const botMood = isActive && gatewayState === 'busy' ? 'work' : 'idle'
 
-  const open = () => {
+  const open = async () => {
     haptic('tap')
     $selectedBot.set(bot.name)
 
-    if (last && typeof host.openSession === 'function') {
-      void host.openSession(last.id, { profile: bot.name })
+    const target = canonicalChatTarget(bot, meta)
+
+    if (target && typeof host.openSession === 'function') {
+      cancelAdoption()
+
+      // Recovery: compaction rewrites lineage ids; a pinned id that no
+      // longer resolves falls back to the profile's newest session (re-pin)
+      // or a fresh draft. One cheap RPC per row click.
+      let id = target.id
+      try {
+        const res = await host.request('session.list', { profile: bot.name, limit: 100 })
+        const rows = res?.sessions ?? []
+
+        if (rows.length && !rows.some(s => s.id === id)) {
+          id = rows[0].id
+          saveBotMeta(bot.name, { chat: id })
+        }
+      } catch {
+        // Gateway hiccup — try the pin as-is.
+      }
+
+      void host.openSession(id, { profile: bot.name })
     } else if (typeof host.newChat === 'function') {
       host.newChat(bot.name)
+      armChatAdoption(bot.name)
     } else {
-      host.navigate(last ? `/${encodeURIComponent(last.id)}` : '/')
+      host.navigate('/')
     }
   }
 
