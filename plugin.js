@@ -1183,22 +1183,13 @@ function slugify(value) {
     .slice(0, 64)
 }
 
-/** SOUL.md for a new bot: identity + how to message the other bots. */
-function composeSoul({ name, title, description, roster, customSoul }) {
-  if (customSoul && customSoul.trim()) {
-    return customSoul
-  }
+/** The agent-to-agent messaging protocol, reusable so a CUSTOM SOUL keeps
+ *  the handoff protocol too — a custom SOUL used to silently drop it,
+ *  breaking @mentions for customized bots (@wesleysimplicio, #16). */
+function messagingProtocolSection(name, roster) {
+  const teammates = (roster || []).filter(b => b.name !== name)
 
-  const teammates = roster.filter(b => b.name !== name)
-  const lines = [
-    `# ${displayName({ name, title })}`,
-    '',
-    title ? `**Role:** ${title}` : null,
-    description ? `**Mission:** ${description}` : null,
-    '',
-    `You are ${displayName({ name, title })}, a persistent named agent (profile \`${name}\`) on this machine.`,
-    'You keep your own memory, skills, and conversation history across sessions.',
-    '',
+  return [
     '## Messaging other agents',
     '',
     'You work alongside other named agents. Every agent (including you) has a',
@@ -1225,13 +1216,32 @@ function composeSoul({ name, title, description, roster, customSoul }) {
     '"tell <name> ...", that is a handoff: message that agent, wait for the',
     'reply, and report back.',
     '',
-    'Current teammates:',
+    'The roster grows over time — run `hermes profiles list` for the LIVE',
+    'teammate list before a handoff. Teammates when you were created:',
     ...(teammates.length
       ? teammates.map(b => `- \`${b.name}\`${b.description ? ` — ${b.description}` : ''}`)
-      : ['- (none yet — the roster grows as agents are created)'])
+      : ['- (none yet)'])
+  ].join('\n')
+}
+
+/** SOUL.md for a new bot: identity (or the user's custom SOUL) + the
+ *  messaging protocol, which ALWAYS ships. */
+function composeSoul({ name, title, description, roster, customSoul }) {
+  if (customSoul && customSoul.trim()) {
+    return customSoul.trim() + '\n\n' + messagingProtocolSection(name, roster)
+  }
+
+  const lines = [
+    `# ${displayName({ name, title })}`,
+    '',
+    title ? `**Role:** ${title}` : null,
+    description ? `**Mission:** ${description}` : null,
+    '',
+    `You are ${displayName({ name, title })}, a persistent named agent (profile \`${name}\`) on this machine.`,
+    'You keep your own memory, skills, and conversation history across sessions.'
   ]
 
-  return lines.filter(line => line !== null).join('\n')
+  return lines.filter(line => line !== null).join('\n') + '\n\n' + messagingProtocolSection(name, roster)
 }
 
 // ── bot row ──────────────────────────────────────────────────────────────────
