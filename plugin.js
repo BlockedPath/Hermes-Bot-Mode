@@ -1944,24 +1944,44 @@ function HubSkillsSection({ forProfile, onInstalled }) {
         ? jsxs('div', {
             className: 'grid gap-1',
             children: [
-              jsx('iframe', {
-                src: HUB_PICKER_URL,
-                title: 'Hermes Skills Hub',
+              // Resizable viewport: native CSS resize handle (bottom-right
+              // corner) lets the user drag it larger/smaller. The iframe
+              // inside is rendered oversized and scaled DOWN (133% × 0.75)
+              // so the hub page starts zoomed out — we can't style the
+              // cross-origin page itself, but scaling the frame is ours.
+              jsx('div', {
                 style: {
                   width: '100%',
-                  height: 420,
+                  height: 560,
+                  minHeight: 240,
+                  minWidth: 320,
+                  maxWidth: '100%',
+                  resize: 'both',
+                  overflow: 'hidden',
                   border: '1px solid var(--ui-stroke-secondary)',
                   borderRadius: 8,
-                  background: 'transparent'
+                  position: 'relative'
                 },
-                sandbox: 'allow-scripts allow-same-origin'
+                children: jsx('iframe', {
+                  src: HUB_PICKER_URL,
+                  title: 'Hermes Skills Hub',
+                  style: {
+                    width: '133.34%',
+                    height: '133.34%',
+                    border: 'none',
+                    background: 'transparent',
+                    transform: 'scale(0.75)',
+                    transformOrigin: 'top left'
+                  },
+                  sandbox: 'allow-scripts allow-same-origin'
+                })
               }),
               jsx('div', {
                 className: 'px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
                 children:
                   installing
                     ? `Installing "${installing}"…`
-                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above.'
+                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'
               })
             ]
           })
@@ -2187,7 +2207,7 @@ function EditProfileDialog({ bot, open, onClose }) {
     open,
     onOpenChange: value => !value && !busy && onClose(),
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-2xl' : 'max-w-sm',
+      className: advanced ? 'max-w-3xl' : 'max-w-sm',
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2439,7 +2459,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
       }
     },
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-xl' : 'max-w-md',
+      className: advanced ? 'max-w-3xl' : 'max-w-md',
       children: [
         jsxs(DialogHeader, {
           children: [
