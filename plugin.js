@@ -2701,13 +2701,17 @@ function BotsPane() {
     }
   }, [gatewayUp, refetch])
   const allMeta = $botMeta.get()
-  const roster = (data?.profiles ?? []).slice().sort((a, b) => {
-    if (a.is_default !== b.is_default) {
-      return a.is_default ? -1 : 1
-    }
+  // Messaging-app order: most recent activity first, where "activity" is
+  // the newest of (bot created, last message in any of its sessions). A
+  // freshly created bot tops the list until another bot gets a message.
+  // No special slot for the primary bot — it competes on recency too.
+  const activityOf = bot => {
+    const created = allMeta[bot.name]?.created || bot.ui_meta?.['hermes-bots']?.created || 0
+    const lastMsg = (bot.last_session?.last_active || 0) * 1000
 
-    return (allMeta[b.name]?.created || 0) - (allMeta[a.name]?.created || 0)
-  })
+    return Math.max(created, lastMsg)
+  }
+  const roster = (data?.profiles ?? []).slice().sort((a, b) => activityOf(b) - activityOf(a))
   $lastRoster.set(roster)
   mergeServerMeta(roster)
   pullServerAvatars(roster)
