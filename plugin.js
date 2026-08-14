@@ -1109,69 +1109,42 @@ function showsHandle(name, meta) {
 //   - recovery: if the pinned id vanishes from the DB (compaction rewrote
 //     the lineage), re-pin the newest session carrying the canonical title.
 
-let adoptWatcher = null
+// In-flight creations, keyed by bot name — double-clicking a row must not
+// mint two canonical chats.
+const canonicalCreations = new Map()
 
-function cancelAdoption() {
-  if (adoptWatcher) {
-    adoptWatcher.off()
-    adoptWatcher = null
+/** Create the bot's ONE forever chat: a real session opened with a kickoff
+ *  message (the gateway prunes zero-message sessions, so the chat is born
+ *  with the bot introducing itself). Pins the stored id in bot meta and
+ *  returns it. */
+function createCanonicalChat(name) {
+  const inflight = canonicalCreations.get(name)
+
+  if (inflight) {
+    return inflight
   }
-}
 
-/** Arm a one-shot watcher: when the fresh draft for `name` becomes a real
- *  session (first message sent), pin its stored id as the bot's chat. */
-function armChatAdoption(name) {
-  cancelAdoption()
+  const run = (async () => {
+    const res = await host.request('session.create', { profile: name, title: 'Bot Chat' })
+    const sid = res?.stored_session_id
+    const runtime = res?.session_id
 
-  const startedAt = Date.now()
-  const off = host.state.activeSessionId.listen(runtime => {
-    if (!runtime) {
-      return
+    if (runtime) {
+      void host
+        .request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+        .catch(() => undefined)
     }
 
-    // Only adopt while the user is still on this bot and within the arm
-    // window — a runtime id appearing later belongs to something else.
-    if ($selectedBot.get() !== name || Date.now() - startedAt > 30 * 60 * 1000) {
-      cancelAdoption()
-      return
+    if (sid) {
+      saveBotMeta(name, { chat: sid })
     }
 
-    // The stored id lags the runtime id by the persistence write; settle,
-    // then take the profile's most recent stored session as the adoptee.
-    window.setTimeout(async () => {
-      try {
-        const res = await host.request('session.most_recent', { profile: name })
-        const sid = res?.id || res?.session_id
+    return sid || null
+  })().finally(() => canonicalCreations.delete(name))
 
-        if (sid && !$botMeta.get()[name]?.chat) {
-          saveBotMeta(name, { chat: sid })
-        }
-      } catch {
-        // Older gateway or nothing persisted yet — the next open retries.
-      }
-    }, 1500)
-    cancelAdoption()
-  })
+  canonicalCreations.set(name, run)
 
-  adoptWatcher = { off }
-}
-
-/** Resolve which session a bot row should open. Returns
- *  {id} to resume, or null for a fresh draft (+ adoption). */
-function canonicalChatTarget(bot, meta) {
-  const pinned = meta?.chat
-
-  if (pinned) {
-    return { id: pinned }
-  }
-
-  // Grandfather: existing bots keep the chat they have been using.
-  if (bot.last_session?.id) {
-    saveBotMeta(bot.name, { chat: bot.last_session.id })
-    return { id: bot.last_session.id }
-  }
-
-  return null
+  return run
 }
 
 function displayName(bot, meta) {
@@ -1267,15 +1240,12 @@ function BotRow({ bot, onEdit }) {
     haptic('tap')
     $selectedBot.set(bot.name)
 
-    const target = canonicalChatTarget(bot, meta)
+    let id = meta?.chat
 
-    if (target && typeof host.openSession === 'function') {
-      cancelAdoption()
-
-      // Recovery: compaction rewrites lineage ids; a pinned id that no
-      // longer resolves falls back to the profile's newest session (re-pin)
-      // or a fresh draft. One cheap RPC per row click.
-      let id = target.id
+    if (id) {
+      // Recovery: compaction rewrites lineage ids. If the pin no longer
+      // resolves, follow the lineage to the newest session that CONTINUES
+      // this chat; if the whole lineage is gone, mint a fresh canonical.
       try {
         const res = await host.request('session.list', { profile: bot.name, limit: 100 })
         const rows = res?.sessions ?? []
@@ -1287,11 +1257,19 @@ function BotRow({ bot, onEdit }) {
       } catch {
         // Gateway hiccup — try the pin as-is.
       }
+    } else {
+      try {
+        id = await createCanonicalChat(bot.name)
+      } catch {
+        id = null
+      }
+    }
 
+    if (id && typeof host.openSession === 'function') {
       void host.openSession(id, { profile: bot.name })
-    } else if (typeof host.newChat === 'function') {
+    } else if (!id && typeof host.newChat === 'function') {
+      // Older gateway without profile-scoped session.create — plain draft.
       host.newChat(bot.name)
-      armChatAdoption(bot.name)
     } else {
       host.navigate('/')
     }
@@ -1919,8 +1897,20 @@ function CreateAgentDialog({ open, onClose, roster }) {
       onClose()
       $selectedBot.set(slug)
 
-      if (typeof host.newChat === 'function') {
-        host.newChat(slug)
+      // Birth the bot's forever chat right away: it introduces itself as
+      // the first thing the user sees, and the pin exists from minute one.
+      try {
+        const sid = await createCanonicalChat(slug)
+
+        if (sid && typeof host.openSession === 'function') {
+          void host.openSession(sid, { profile: slug })
+        } else if (typeof host.newChat === 'function') {
+          host.newChat(slug)
+        }
+      } catch {
+        if (typeof host.newChat === 'function') {
+          host.newChat(slug)
+        }
       }
     } catch (err) {
       setBusy(false)
