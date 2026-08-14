@@ -54,7 +54,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-bots'
@@ -351,6 +351,18 @@ async function duplicateBot(bot, roster) {
 // The original flat shapes. Sigils ('sigil-N') and platonic
 // solids remain render-only so any bot that picked one during the experiments
 // keeps its look.
+// Radix ScrollArea's viewport wraps children in a display:table div that
+// sizes to content — unbounded width means `truncate` below it never fires
+// and previews run through the panel edge. Scope-limited corrective.
+if (typeof document !== 'undefined' && !document.getElementById('hermes-bots-roster-css')) {
+  const style = document.createElement('style')
+  style.id = 'hermes-bots-roster-css'
+  style.textContent =
+    '.hermes-bots-roster [data-radix-scroll-area-viewport] > div {' +
+    ' display: block !important; width: 100%; min-width: 0; }'
+  document.head.appendChild(style)
+}
+
 const AVATAR_SHAPES = ['circle', 'squircle', 'pill', 'triangle', 'hexagon', 'cloud', 'drop']
 
 /** xorshift PRNG seeded from a string — stable across sessions/platforms. */
@@ -1448,7 +1460,7 @@ function BotRow({ bot, onEdit }) {
     type: 'button',
     onClick: open,
     className: cn(
-      'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors',
+      'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
       isActive && 'bg-(--chrome-action-hover)'
     ),
@@ -1773,6 +1785,15 @@ function AdvancedProfileConfig({ bot, state, setState }) {
             jsx(ScrollArea, {
               style: { maxHeight: 180 },
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
+            }),
+            jsx(HubSkillsSection, {
+              forProfile: bot,
+              onInstalled: name =>
+                setState(prev =>
+                  prev.skills.some(s => s.name === name)
+                    ? prev
+                    : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
+                )
             })
           ]
         })
@@ -1795,6 +1816,256 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
         })
       )
+    ]
+  })
+}
+
+// ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
+// https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
+// docs chrome and adds "+ Add to this Agent" per card, posting
+// {type: 'hermes-skill-pick', ...} to us (hermes-agent#86243). We validate
+// the origin, install via skills.manage, and bubble onInstalled so the
+// checklist above gains the row. Search-box fallback kept for offline use.
+
+const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
+
+function HubSkillsSection({ forProfile, onInstalled }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState(null)
+  const [searching, setSearching] = useState(false)
+  const [installing, setInstalling] = useState(null)
+  const [installed, setInstalled] = useState({})
+  const [browseHub, setBrowseHub] = useState(false)
+  const installRef = useRef(null)
+
+  // Picker messages from the embedded hub page. Origin-checked; installs
+  // route through the same install() the search fallback uses.
+  useEffect(() => {
+    if (!browseHub) {
+      return undefined
+    }
+
+    const onMessage = event => {
+      if (event.origin !== HUB_ORIGIN) {
+        return
+      }
+
+      const data = event.data
+
+      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+        return
+      }
+
+      const target = String(data.identifier || data.name)
+
+      if (installRef.current) {
+        void installRef.current(target, String(data.name))
+      }
+    }
+
+    window.addEventListener('message', onMessage)
+
+    return () => window.removeEventListener('message', onMessage)
+  }, [browseHub])
+
+  const search = async () => {
+    const q = query.trim()
+
+    if (!q || searching) {
+      return
+    }
+
+    setSearching(true)
+    setResults(null)
+
+    try {
+      const res = await host.request('skills.manage', { action: 'search', query: q })
+      setResults(res.results || [])
+    } catch {
+      setResults([])
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const install = async (name, displayName) => {
+    const label = displayName || name
+
+    if (installing) {
+      return
+    }
+
+    setInstalling(label)
+
+    try {
+      // With forProfile the install lands in that bot's skills dir
+      // (gateway skills.manage profile scoping); null = launch profile,
+      // which is right at create time — the new bot clones/copies from it.
+      await host.request('skills.manage', {
+        action: 'install',
+        query: name,
+        ...(forProfile ? { profile: forProfile } : {})
+      })
+      setInstalled(prev => ({ ...prev, [label]: true }))
+      host.notify({ kind: 'success', message: `Skill "${label}" installed` })
+
+      if (typeof onInstalled === 'function') {
+        onInstalled(label)
+      }
+    } catch (err) {
+      host.notifyError(err, `Installing "${label}" failed`)
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  installRef.current = install
+
+  return jsxs('div', {
+    className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
+    children: [
+      jsxs('div', {
+        className: 'flex items-baseline justify-between gap-2',
+        children: [
+          jsx('div', {
+            className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
+            children: 'Skills Hub'
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
+            onClick: () => setBrowseHub(v => !v),
+            children: browseHub ? 'hide the hub browser' : 'browse the full hub ▾'
+          })
+        ]
+      }),
+      browseHub
+        ? jsxs('div', {
+            className: 'grid gap-1',
+            children: [
+              // Resizable viewport: native CSS resize handle (bottom-right
+              // corner) lets the user drag it larger/smaller. The iframe
+              // inside is rendered oversized and scaled DOWN (133% × 0.75)
+              // so the hub page starts zoomed out — we can't style the
+              // cross-origin page itself, but scaling the frame is ours.
+              jsx('div', {
+                style: {
+                  width: '100%',
+                  height: 560,
+                  minHeight: 240,
+                  minWidth: 320,
+                  maxWidth: '100%',
+                  resize: 'both',
+                  overflow: 'hidden',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 8,
+                  position: 'relative'
+                },
+                children: jsx('iframe', {
+                  src: HUB_PICKER_URL,
+                  title: 'Hermes Skills Hub',
+                  style: {
+                    width: '133.34%',
+                    height: '133.34%',
+                    border: 'none',
+                    background: 'transparent',
+                    transform: 'scale(0.75)',
+                    transformOrigin: 'top left'
+                  },
+                  sandbox: 'allow-scripts allow-same-origin'
+                })
+              }),
+              jsx('div', {
+                className: 'px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                children:
+                  installing
+                    ? `Installing "${installing}"…`
+                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'
+              })
+            ]
+          })
+        : null,
+      jsxs('div', {
+        className: 'flex gap-1.5',
+        children: [
+          jsx(Input, {
+            className: 'h-7 flex-1 text-xs',
+            placeholder: 'Search the hub (community + well-known sources)…',
+            value: query,
+            onChange: event => setQuery(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void search()
+              }
+            }
+          }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'secondary',
+            disabled: searching || !query.trim(),
+            onClick: () => void search(),
+            children: searching ? 'Searching…' : 'Search'
+          })
+        ]
+      }),
+      searching
+        ? jsx('div', {
+            className: 'px-1 text-[0.65rem] text-(--ui-text-quaternary)',
+            children: 'Searching community + well-known sources — can take ~10s…'
+          })
+        : null,
+      results === null
+        ? null
+        : results.length === 0
+          ? jsx('div', {
+              className: 'px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)',
+              children: 'No hub skills matched.'
+            })
+          : jsx(ScrollArea, {
+              style: { maxHeight: 150 },
+              children: jsx('div', {
+                className: 'grid gap-1',
+                children: results.map(r =>
+                  jsxs(
+                    'div',
+                    {
+                      className: 'flex items-center gap-2 text-xs',
+                      children: [
+                        jsxs('div', {
+                          className: 'min-w-0 flex-1',
+                          children: [
+                            jsx('div', { className: 'truncate font-medium', children: r.name }),
+                            r.description
+                              ? jsx('div', {
+                                  className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
+                                  children: r.description
+                                })
+                              : null
+                          ]
+                        }),
+                        installed[r.name]
+                          ? jsx('span', {
+                              className: 'shrink-0 text-[0.65rem] text-(--ui-text-tertiary)',
+                              children: '✓ added'
+                            })
+                          : jsx(Button, {
+                              size: 'sm',
+                              variant: 'ghost',
+                              className: 'shrink-0 px-2 font-semibold',
+                              disabled: installing !== null,
+                              title: `Install "${r.name}" and add it to the list above`,
+                              onClick: () => void install(r.name),
+                              children: installing === r.name ? '…' : '+'
+                            })
+                      ]
+                    },
+                    r.name
+                  )
+                )
+              })
+            })
     ]
   })
 }
@@ -1936,7 +2207,11 @@ function EditProfileDialog({ bot, open, onClose }) {
     open,
     onOpenChange: value => !value && !busy && onClose(),
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-2xl' : 'max-w-sm',
+      className: advanced ? 'max-w-3xl' : 'max-w-sm',
+      // Same resizable-window treatment as the create dialog.
+      style: advanced
+        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2021,6 +2296,12 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
   const [noSkills, setNoSkills] = useState(false)
+  const [shareAuth, setShareAuth] = useState(true)
+  const [advTab, setAdvTab] = useState('general')
+  const [caps, setCaps] = useState(null)
+  const [capsFailed, setCapsFailed] = useState(false)
+  const [dirtyCaps, setDirtyCaps] = useState({ skills: false, toolsets: false, mcp: false })
+  const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -2041,8 +2322,62 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setProvider('')
     setSoul('')
     setNoSkills(false)
+    setShareAuth(true)
+    setAdvTab('general')
+    setCaps(null)
+    setCapsFailed(false)
+    setDirtyCaps({ skills: false, toolsets: false, mcp: false })
+    setCapFilter('')
     setBusy(false)
     setError(null)
+  }
+
+  // Capability catalog for the tabs: the profile doesn't exist yet, so show
+  // what it WILL have — the clone source's catalog, else the main profile's.
+  const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
+  const ensureCaps = () => {
+    if ((caps && caps.source === capSource) || capsFailed) {
+      return
+    }
+
+    Promise.all([
+      host.request('profiles.describe', { name: capSource }),
+      host.request('mcp.catalog', {}).catch(() => null)
+    ])
+      .then(([res, cat]) => {
+        // Full MCP menu = the profile's configured servers + the bundled
+        // catalog (installable). Configured entries win on name clash.
+        const configured = res.mcp_servers || []
+        const have = new Set(configured.map(m => m.name))
+        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+
+        setCaps({
+          source: capSource,
+          skills: res.skills || [],
+          toolsets: res.toolsets || [],
+          mcp: [
+            ...configured,
+            ...catalog.map(s => ({
+              name: s.name,
+              enabled: false,
+              fromCatalog: true,
+              installed: s.installed,
+              requires: s.requires || [],
+              description: s.description || ''
+            }))
+          ]
+        })
+      })
+      .catch(() => setCapsFailed(true))
+  }
+
+  const toggleCap = (kind, name, enabled) => {
+    setDirtyCaps(prev => ({ ...prev, [kind === 'mcp' ? 'mcp' : kind]: true }))
+    setCaps(prev =>
+      prev
+        ? { ...prev, [kind]: prev[kind].map(x => (x.name === name ? { ...x, enabled } : x)) }
+        : prev
+    )
   }
 
   const submit = async () => {
@@ -2061,9 +2396,36 @@ function CreateAgentDialog({ open, onClose, roster }) {
         description: descriptionText,
         clone_from: cloneFrom === '__none__' ? null : cloneFrom,
         no_skills: noSkills,
+        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
+        // profile, so refreshes can't invalidate each other. Older gateways
+        // ignore the param and copy — still functional, just forked.
+        share_auth: shareAuth,
         soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
         ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
       })
+
+      // Apply capability picks from the Advanced tabs (best-effort; the
+      // profile exists either way and Edit Profile can finish the job).
+      try {
+        const capPayload = {}
+
+        if (dirtyCaps.skills && caps) {
+          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
+        }
+        if (dirtyCaps.toolsets && caps) {
+          const en = caps.toolsets.filter(t => t.enabled)
+          capPayload.enabled_toolsets =
+            en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
+        }
+        if (dirtyCaps.mcp && caps) {
+          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+        }
+        if (Object.keys(capPayload).length) {
+          await host.request('profiles.configure', { name: slug, ...capPayload })
+        }
+      } catch {
+        /* capability application is best-effort */
+      }
 
       saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
       queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
@@ -2101,7 +2463,13 @@ function CreateAgentDialog({ open, onClose, roster }) {
       }
     },
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-xl' : 'max-w-md',
+      className: advanced ? 'max-w-3xl' : 'max-w-md',
+      // Native resize handle (bottom-right corner): the dialog becomes a
+      // window the user can grow/shrink. overflow:auto is required for CSS
+      // resize to engage; caps keep it on screen.
+      style: advanced
+        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
@@ -2163,7 +2531,14 @@ function CreateAgentDialog({ open, onClose, roster }) {
               type: 'button',
               className:
                 'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
-              onClick: () => setAdvanced(v => !v),
+              onClick: () => {
+                setAdvanced(v => {
+                  if (!v) {
+                    ensureCaps()
+                  }
+                  return !v
+                })
+              },
               children: [
                 jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
                 'Advanced'
@@ -2171,64 +2546,255 @@ function CreateAgentDialog({ open, onClose, roster }) {
             }),
             advanced
               ? jsxs('div', {
-                  className: 'grid gap-3.5 rounded-md border border-(--ui-stroke-secondary) p-3',
+                  className: 'grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3',
                   children: [
-                    labeled(
-                      'Clone from profile',
-                      jsxs(Select, {
-                        value: cloneFrom,
-                        onValueChange: setCloneFrom,
-                        children: [
-                          jsx(SelectTrigger, {
-                            className: 'h-8 rounded-md',
-                            children: jsx(SelectValue, {})
-                          }),
-                          jsxs(SelectContent, {
-                            children: [
-                              jsx(SelectItem, { value: '__none__', children: 'Fresh profile (bundled skills)' }),
-                              ...roster.map(b => jsx(SelectItem, { value: b.name, children: b.name }, b.name))
-                            ]
-                          })
-                        ]
-                      })
-                    ),
-                    jsx(ModelPicker, {
-                      value: { provider, model },
-                      onChange: patch => {
-                        if ('provider' in patch) {
-                          setProvider(patch.provider)
-                        }
-                        if ('model' in patch) {
-                          setModel(patch.model)
-                        }
-                      },
-                      placeholderModel: 'inherited from launch profile'
-                    }),
-                    labeled(
-                      'SOUL.md (optional — replaces the generated persona)',
-                      jsx(Textarea, {
-                        className: 'min-h-24 font-mono text-xs leading-5',
-                        placeholder:
-                          'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
-                        value: soul,
-                        onChange: event => setSoul(event.target.value)
-                      })
-                    ),
-                    jsxs('label', {
-                      className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
-                      children: [
-                        jsx(Checkbox, {
-                          checked: noSkills,
-                          onCheckedChange: value => setNoSkills(Boolean(value))
-                        }),
-                        'Create empty (skip bundled skills)'
-                      ]
-                    }),
                     jsx('div', {
-                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                      children:
-                        'Per-skill and per-toolset selection lives in right-click → Edit Profile → Advanced once the agent exists (skills are installed during creation).'
-                    })
+                      className: 'flex gap-1',
+                      children: [
+                        ['general', 'General'],
+                        ['skills', 'Skills'],
+                        ['toolsets', 'Tools'],
+                        ['mcp', 'MCP']
+                      ].map(([id, label]) =>
+                        jsx(
+                          'button',
+                          {
+                            type: 'button',
+                            className: cn(
+                              'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                              advTab === id
+                                ? 'bg-(--chrome-action-hover) text-(--ui-text-primary)'
+                                : 'text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)'
+                            ),
+                            onClick: () => {
+                              setAdvTab(id)
+                              setCapFilter('')
+                              if (id !== 'general') {
+                                ensureCaps()
+                              }
+                            },
+                            children: label
+                          },
+                          id
+                        )
+                      )
+                    }),
+                    advTab === 'general'
+                      ? jsxs('div', {
+                          className: 'grid gap-3.5',
+                          children: [
+                            labeled(
+                              'Clone from profile',
+                              jsxs(Select, {
+                                value: cloneFrom,
+                                onValueChange: value => {
+                                  setCloneFrom(value)
+                                  setCaps(null)
+                                  setCapsFailed(false)
+                                },
+                                children: [
+                                  jsx(SelectTrigger, {
+                                    className: 'h-8 rounded-md',
+                                    children: jsx(SelectValue, {})
+                                  }),
+                                  jsxs(SelectContent, {
+                                    children: [
+                                      jsx(SelectItem, {
+                                        value: '__none__',
+                                        children: 'Fresh profile (bundled skills)'
+                                      }),
+                                      ...roster.map(b => jsx(SelectItem, { value: b.name, children: b.name }, b.name))
+                                    ]
+                                  })
+                                ]
+                              })
+                            ),
+                            jsx(ModelPicker, {
+                              value: { provider, model },
+                              onChange: patch => {
+                                if ('provider' in patch) {
+                                  setProvider(patch.provider)
+                                }
+                                if ('model' in patch) {
+                                  setModel(patch.model)
+                                }
+                              },
+                              placeholderModel: 'inherited from launch profile'
+                            }),
+                            labeled(
+                              'SOUL.md (optional — replaces the generated persona)',
+                              jsx(Textarea, {
+                                className: 'min-h-24 font-mono text-xs leading-5',
+                                placeholder:
+                                  'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
+                                value: soul,
+                                onChange: event => setSoul(event.target.value)
+                              })
+                            ),
+                            jsxs('label', {
+                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
+                              children: [
+                                jsx(Checkbox, {
+                                  checked: shareAuth,
+                                  onCheckedChange: value => setShareAuth(Boolean(value))
+                                }),
+                                'Share keys & accounts with the main profile'
+                              ]
+                            }),
+                            jsx('div', {
+                              className: 'pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)',
+                              children:
+                                'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.'
+                            }),
+                            jsxs('label', {
+                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
+                              children: [
+                                jsx(Checkbox, {
+                                  checked: noSkills,
+                                  onCheckedChange: value => setNoSkills(Boolean(value))
+                                }),
+                                'Create empty (skip bundled skills)'
+                              ]
+                            })
+                          ]
+                        })
+                      : capsFailed
+                        ? jsx('div', {
+                            className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                            children:
+                              'Capability catalog needs a newer gateway (restart it after updating Hermes).'
+                          })
+                        : !caps
+                          ? jsx('div', {
+                              className: 'flex justify-center py-4',
+                              children: jsx(GlyphSpinner, {
+                                spinner: 'breathe',
+                                className: 'text-(--ui-text-tertiary)'
+                              })
+                            })
+                          : advTab === 'skills'
+                            ? noSkills
+                              ? jsx('div', {
+                                  className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                                  children: '“Create empty” is checked — no bundled skills will be installed.'
+                                })
+                              : jsxs('div', {
+                                  className: 'grid gap-1.5',
+                                  children: [
+                                    jsx(Input, {
+                                      className: 'h-7 text-xs',
+                                      placeholder: 'Filter skills…',
+                                      value: capFilter,
+                                      onChange: event => setCapFilter(event.target.value)
+                                    }),
+                                    jsx(ScrollArea, {
+                                      style: { maxHeight: 200 },
+                                      children: jsx(CheckList, {
+                                        items: capFilter.trim()
+                                          ? caps.skills.filter(s =>
+                                              s.name.toLowerCase().includes(capFilter.trim().toLowerCase())
+                                            )
+                                          : caps.skills,
+                                        onToggle: (name, enabled) => toggleCap('skills', name, enabled),
+                                        columns: 2
+                                      })
+                                    }),
+                                    jsx('div', {
+                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                      children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
+                                    }),
+                                    jsx(HubSkillsSection, {
+                                      forProfile: null,
+                                      onInstalled: name =>
+                                        setCaps(prev =>
+                                          !prev || prev.skills.some(s => s.name === name)
+                                            ? prev
+                                            : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
+                                        )
+                                    })
+                                  ]
+                                })
+                            : advTab === 'toolsets'
+                              ? jsxs('div', {
+                                  className: 'grid gap-1.5',
+                                  children: [
+                                    jsx(ScrollArea, {
+                                      style: { maxHeight: 200 },
+                                      children: jsx(CheckList, {
+                                        items: caps.toolsets,
+                                        onToggle: (name, enabled) => toggleCap('toolsets', name, enabled),
+                                        columns: 2
+                                      })
+                                    }),
+                                    jsx('div', {
+                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                      children: 'Leaving all (or none) checked keeps the default toolset behavior.'
+                                    })
+                                  ]
+                                })
+                              : caps.mcp.length === 0
+                                ? jsx('div', {
+                                    className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                                    children: 'No MCP servers configured or in the catalog.'
+                                  })
+                                : jsxs('div', {
+                                    className: 'grid gap-1.5',
+                                    children: [
+                                      jsx(ScrollArea, {
+                                        style: { maxHeight: 200 },
+                                        children: jsx('div', {
+                                          className: 'grid gap-1',
+                                          children: caps.mcp.map(m => {
+                                            const needsSetup =
+                                              m.fromCatalog && !m.installed && (m.requires || []).length > 0
+
+                                            return jsxs(
+                                              'label',
+                                              {
+                                                className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
+                                                children: [
+                                                  jsx(Checkbox, {
+                                                    checked: !!m.enabled,
+                                                    disabled: needsSetup,
+                                                    onCheckedChange: value => toggleCap('mcp', m.name, Boolean(value))
+                                                  }),
+                                                  jsxs('span', {
+                                                    className: 'min-w-0',
+                                                    children: [
+                                                      jsx('span', { children: m.name }),
+                                                      m.fromCatalog
+                                                        ? jsx('span', {
+                                                            className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+                                                            children: needsSetup
+                                                              ? 'needs setup (' + (m.requires || []).join(', ') + ') — run "hermes mcp" or Settings first'
+                                                              : m.installed
+                                                                ? 'catalog · installed'
+                                                                : 'catalog'
+                                                          })
+                                                        : null,
+                                                      m.description
+                                                        ? jsx('div', {
+                                                            className:
+                                                              'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                                            children: m.description
+                                                          })
+                                                        : null
+                                                    ]
+                                                  })
+                                                ]
+                                              },
+                                              m.name
+                                            )
+                                          })
+                                        })
+                                      }),
+                                      jsx('div', {
+                                        className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                        children:
+                                          'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).'
+                                      })
+                                    ]
+                                  })
                   ]
                 })
               : null,
@@ -2891,6 +3457,19 @@ function BotsPane() {
     mergeServerMeta(live)
     pullServerAvatars(live)
     trackInboundActivity(live)
+
+    // Pre-dial each bot's gateway socket so the first click doesn't pay
+    // the backend spawn + connect cost (SDK door from hermes-agent#85954;
+    // feature-detected — absent on older desktops, harmless to skip).
+    if (typeof host.warmProfile === 'function') {
+      for (const bot of live) {
+        try {
+          host.warmProfile(bot.name)
+        } catch {
+          /* warm is best-effort */
+        }
+      }
+    }
   }
 
   const staleNotice = error && !live && roster.length
@@ -2955,9 +3534,9 @@ function BotsPane() {
                 description: 'Create your first teammate.'
               })
             : jsx(ScrollArea, {
-                className: 'min-h-0 flex-1',
+                className: 'hermes-bots-roster min-h-0 flex-1',
                 children: jsx('div', {
-                  className: 'grid gap-0.5 px-1.5 pb-2',
+                  className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
                   children: roster.map(bot => jsx(BotRow, { bot, onEdit: setEditing }, bot.name))
                 })
               }),
@@ -3075,6 +3654,33 @@ export default {
       data: {
         handler: async draft => {
           const text = draft.text || ''
+
+          // /new inside a bot's canonical forever-chat would fork the
+          // relationship into a scratch session — the one thing Bots mode
+          // promises never happens. Reroute to /compact (same felt effect:
+          // fresh working context, SAME conversation) and say so. Only
+          // guards the canonical chat: Sessions-mode scratchpads on the
+          // same profile keep full /new freedom.
+          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
+
+          if (slashNew) {
+            const activeBot = $selectedBot.get()
+            const meta = activeBot ? $botMeta.get()[activeBot] : null
+            const pinnedId = meta?.chat_pin || null
+            const currentId = host.activeSessionId?.get?.() ?? null
+
+            if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
+              host.notify({
+                kind: 'info',
+                title: 'This chat never resets',
+                message:
+                  'Bot chats are one continuous conversation — compacting instead. ' +
+                  'For a throwaway session with this agent, use Sessions mode.'
+              })
+
+              return { ...draft, text: '/compact' }
+            }
+          }
 
           if (!/(^|\s)@[a-z0-9][a-z0-9_-]*/i.test(text)) {
             return draft
