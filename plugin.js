@@ -2935,15 +2935,14 @@ export default {
             return draft
           }
 
-          let profiles = []
+          let names = []
           try {
             const res = await host.request('profiles.list', { include_sessions: false })
-            profiles = res?.profiles ?? []
+            names = (res?.profiles ?? []).map(p => p.name)
           } catch {
             return draft
           }
 
-          const names = profiles.map(p => p.name)
           // Mentions in code are code, not handoffs (#20).
           const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
           const active = (host.state.profile.get() || 'default').trim() || 'default'
@@ -2965,62 +2964,19 @@ export default {
             return draft
           }
 
-          // Grok-bots delivery: the plugin drops the message straight into
-          // each mentioned bot's canonical chat over the gateway — no
-          // terminal relay, no CLI spam in either chat. The recipient's
-          // chat shows "Message from 🤖 <sender>" and its reply; if that
-          // chat is open it streams live.
-          const senderMeta = $botMeta.get()[active]
-          const sender = displayName({ name: active, title: senderMeta?.title }, senderMeta)
-          const cleaned = text.replace(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi, (m, pre, n) => pre + botHandle(n)).trim()
-
-          for (const target of mentioned) {
-            void (async () => {
-              try {
-                let sid = $botMeta.get()[target]?.chat
-
-                if (!sid) {
-                  const rows = await host.request('session.list', { profile: target, limit: 50 })
-                  sid = (rows?.sessions ?? []).find(s => s.title === 'Bot Chat')?.id || null
-                }
-
-                if (!sid) {
-                  sid = await createCanonicalChat(target)
-                }
-
-                if (!sid) {
-                  throw new Error('no canonical chat')
-                }
-
-                const resumed = await host.request('session.resume', { session_id: sid, profile: target, omit_messages: true })
-                const runtime = resumed?.session_id
-
-                if (!runtime) {
-                  throw new Error('could not open the chat')
-                }
-
-                await host.request('prompt.submit', {
-                  session_id: runtime,
-                  text: 'Message from \uD83E\uDD16 ' + sender + ': ' + cleaned
-                })
-                const targetMeta = $botMeta.get()[target]
-                host.notify({
-                  kind: 'success',
-                  title: 'Message delivered',
-                  message: 'Sent to ' + displayName({ name: target, title: targetMeta?.title }, targetMeta) + ' — the reply lands in their chat.'
-                })
-              } catch (err) {
-                host.notifyError(err, 'Could not deliver to @' + botHandle(target))
-              }
-            })()
-          }
-
-          // The active bot still sees the user's message, minus relay duty —
-          // just tell it the delivery already happened.
+          // The ACTIVE BOT composes the message — it understands intent; a
+          // text pipe never can. Delivery is the one blessed command into the
+          // recipient's canonical Bot Chat, so their side reads as a normal
+          // DM (message bubble + their reply), and the reply prints on
+          // stdout for the sender to relay.
+          const activeMeta = $botMeta.get()[active]
+          const senderName = displayName({ name: active, title: activeMeta?.title }, activeMeta)
           const note =
-            '\n\n[Note: the @-mentioned agent' + (mentioned.length > 1 ? 's were' : ' was') +
-            ' already messaged directly (' + mentioned.map(botHandle).join(', ') + ') — their replies arrive in their own chats. ' +
-            'Do NOT relay this message yourself; just handle anything addressed to you.]'
+            '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
+            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one command:\n' +
+            mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ': <your composed message>"`').join('\n') +
+            '\nIf it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
+            'Relay the reply back to the user, attributed to that agent.]'
 
           return { ...draft, text: text + note }
         }      }
