@@ -668,9 +668,14 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
 }
 
 function botAppearance(name, meta) {
+  // The primary profile is literally named "default"; the SDK's profileColor
+  // can hand it a near-black that renders as an ugly black square, and it has
+  // no bot-meta appearance of its own. Give it a nice fixed generic look
+  // (a friendly violet squircle) unless the user has explicitly customized it.
+  const isPrimary = (name || '').trim().toLowerCase() === 'default'
   return {
-    shape: meta?.shape || defaultShapeFor(name),
-    color: meta?.color || profileColor(name),
+    shape: meta?.shape || (isPrimary ? 'squircle' : defaultShapeFor(name)),
+    color: meta?.color || (isPrimary ? '#8b5cf6' : profileColor(name)),
     image: meta?.image || null
   }
 }
