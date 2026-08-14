@@ -1083,6 +1083,18 @@ function useRoster() {
   })
 }
 
+function showsHandle(name, meta) {
+  // Never advertise '@default' — the point of presenting the primary
+  // profile as Hermes is that users stop seeing the word 'default'.
+  // (@mentions/CLI for it are rarely needed; it's the profile you're in.)
+  if ((name || '').trim().toLowerCase() === 'default') {
+    return false
+  }
+
+  const title = meta?.title?.trim()
+  return Boolean(name && title && name.toLowerCase() !== title.toLowerCase())
+}
+
 function displayName(bot, meta) {
   if (meta?.title?.trim()) {
     return meta.title.trim()
@@ -1209,7 +1221,7 @@ function BotRow({ bot, onEdit }) {
                     className: 'truncate text-[0.8125rem] font-medium',
                     children: displayName(bot, meta)
                   }),
-                  bot.name && bot.name.toLowerCase() !== displayName(bot, meta).toLowerCase()
+                  showsHandle(bot.name, meta)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
                         children: `@${bot.name}`
@@ -2499,7 +2511,7 @@ function RoutinesPane() {
                     className: 'truncate text-xs font-semibold',
                     children: displayName({ name: bot }, meta)
                   }),
-                  bot.toLowerCase() !== displayName({ name: bot }, meta).toLowerCase()
+                  showsHandle(bot, meta)
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
                         children: `@${bot}`
