@@ -351,6 +351,18 @@ async function duplicateBot(bot, roster) {
 // The original flat shapes. Sigils ('sigil-N') and platonic
 // solids remain render-only so any bot that picked one during the experiments
 // keeps its look.
+// Radix ScrollArea's viewport wraps children in a display:table div that
+// sizes to content — unbounded width means `truncate` below it never fires
+// and previews run through the panel edge. Scope-limited corrective.
+if (typeof document !== 'undefined' && !document.getElementById('hermes-bots-roster-css')) {
+  const style = document.createElement('style')
+  style.id = 'hermes-bots-roster-css'
+  style.textContent =
+    '.hermes-bots-roster [data-radix-scroll-area-viewport] > div {' +
+    ' display: block !important; width: 100%; min-width: 0; }'
+  document.head.appendChild(style)
+}
+
 const AVATAR_SHAPES = ['circle', 'squircle', 'pill', 'triangle', 'hexagon', 'cloud', 'drop']
 
 /** xorshift PRNG seeded from a string — stable across sessions/platforms. */
@@ -1448,7 +1460,7 @@ function BotRow({ bot, onEdit }) {
     type: 'button',
     onClick: open,
     className: cn(
-      'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors',
+      'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
       'hover:bg-(--chrome-action-hover)',
       isActive && 'bg-(--chrome-action-hover)'
     ),
@@ -2968,9 +2980,9 @@ function BotsPane() {
                 description: 'Create your first teammate.'
               })
             : jsx(ScrollArea, {
-                className: 'min-h-0 flex-1',
+                className: 'hermes-bots-roster min-h-0 flex-1',
                 children: jsx('div', {
-                  className: 'grid gap-0.5 px-1.5 pb-2',
+                  className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
                   children: roster.map(bot => jsx(BotRow, { bot, onEdit: setEditing }, bot.name))
                 })
               }),
