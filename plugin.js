@@ -1478,6 +1478,13 @@ function BotRow({ bot, onEdit }) {
               jsxs('div', {
                 className: 'flex min-w-0 items-baseline gap-1.5 truncate',
                 children: [
+                  meta?.pinned
+                    ? jsx('span', {
+                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
+                        title: 'Pinned',
+                        children: '📌'
+                      })
+                    : null,
                   jsx('span', {
                     className: 'truncate text-[0.8125rem] font-medium',
                     children: displayName(bot, meta)
@@ -1518,6 +1525,18 @@ function BotRow({ bot, onEdit }) {
       jsx(ContextMenuTrigger, { asChild: true, children: row }),
       jsxs(ContextMenuContent, {
         children: [
+          jsx(ContextMenuItem, {
+            onSelect: () => {
+              const pinned = Boolean($botMeta.get()[bot.name]?.pinned)
+              saveBotMeta(bot.name, { pinned: !pinned })
+              host.notify({
+                kind: 'info',
+                message: `${displayName(bot, meta)} ${pinned ? 'unpinned' : 'pinned to top'}`
+              })
+            },
+            children: meta?.pinned ? 'Unpin' : 'Pin to top'
+          }),
+          jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
           jsx(ContextMenuItem, {
             onSelect: () => {
@@ -3444,13 +3463,26 @@ function BotsPane() {
 
     return Math.max(created, lastMsg)
   }
+  // Pinned bots (right-click → Pin) float to the top as a group; within the
+  // pinned group and within the unpinned group, recency still rules. A
+  // plain boolean flag in bot-meta (rides ui_meta to every machine).
+  const isPinned = bot => Boolean(allMeta[bot.name]?.pinned)
   // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
   // roster the user already had — mixed local+cloud gateways and remotes
   // waking from sleep fail transiently. Render the last good snapshot with
   // a notice; the full error card is reserved for "never had a roster".
   const live = Array.isArray(data?.profiles) ? data.profiles : null
   const source = live ?? (error ? $lastRoster.get() : [])
-  const roster = source.slice().sort((a, b) => activityOf(b) - activityOf(a))
+  const roster = source.slice().sort((a, b) => {
+    const pa = isPinned(a) ? 1 : 0
+    const pb = isPinned(b) ? 1 : 0
+
+    if (pa !== pb) {
+      return pb - pa
+    }
+
+    return activityOf(b) - activityOf(a)
+  })
 
   if (live) {
     $lastRoster.set(roster)
