@@ -190,7 +190,11 @@ async function duplicateBot(bot, roster) {
   const base = bot.name
   let name = null
   for (let n = 2; n < 100; n++) {
-    const candidate = `${base}-${n}`.slice(0, 64)
+    // Truncate the BASE, never the suffix — slicing the joined string chops
+    // the "-2" off a max-length name and the candidate collides with the
+    // base forever (#19).
+    const suffix = `-${n}`
+    const candidate = base.slice(0, 64 - suffix.length) + suffix
     if (!roster.some(b => b.name === candidate)) {
       name = candidate
       break
@@ -1200,10 +1204,15 @@ function messagingProtocolSection(name, roster) {
     'hermes -p <agent-name> chat --in ~ -c "Agent Inbox" -q "[Message from agent \'' + name + '\'] your message"',
     '```',
     '',
-    '(`--in ~ -c "Agent Inbox"` appends to that ONE named conversation in the',
-    'home workspace, creating it on first use — never a throwaway session and',
-    'never a duplicate (without `--in ~` the -c lookup is scoped to your',
-    'current directory and silently creates a second inbox). Open with the',
+    '(`--in ~ -c "Agent Inbox"` appends to that ONE named conversation in',
+    'the home workspace — never a throwaway session, never a duplicate.',
+    'FIRST CONTACT: `-c` only RESUMES an existing session ("No session found',
+    'matching \'Agent Inbox\'" means it does not exist yet). Bootstrap it once:',
+    'send via a quiet one-shot instead (`hermes -p <agent-name> chat --in ~',
+    '-Q -q "..."`), then rename that new session to "Agent Inbox":',
+    '`hermes -p <agent-name> sessions rename <session-id> "Agent Inbox"`',
+    '(the id is in `hermes -p <agent-name> sessions list`). Every later',
+    'message uses the normal -c form. Open with the',
     "[Message from agent '" + name + "'] prefix so they know who is talking.)",
     'Their reply prints to stdout — relay the relevant part back to the user,',
     'and mention it came from that agent.',
@@ -2937,8 +2946,13 @@ export default {
             return draft
           }
 
+          // Strip fenced blocks and inline code before scanning: @words in
+          // code are code, not handoffs (#20). Offsets shift, so scan the
+          // stripped copy — mention names are all we need.
+          const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
+
           const mentioned = []
-          for (const match of text.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
+          for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
             let name = match[2].toLowerCase()
 
             // '@hermes' is the primary profile's alias (the UI never says
