@@ -1,6 +1,6 @@
 # Hermes Bot Mode
 
-A desktop plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that turns your agent profiles into a roster of named bots — each with its own chat, avatar, personality, and schedule.
+A **desktop-app plugin** for [Hermes Agent](https://github.com/NousResearch/hermes-agent) (installs where the desktop app runs — see Install) that turns your agent profiles into a roster of named bots — each with its own chat, avatar, personality, and schedule.
 
 ![Hermes Agent desktop plugin](https://img.shields.io/badge/hermes-desktop%20plugin-8b5cf6) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -44,6 +44,8 @@ No core patches, no background daemons, no extra storage: everything is standard
 <img width="1313" height="612" alt="image" src="https://github.com/user-attachments/assets/c45b1e96-4362-4462-a049-ba8c44b87bed" />
 
 ## Install
+
+> **This is a desktop plugin** — it must be installed on the machine running the **Hermes desktop app**, not on the gateway. Desktop plugins load from the app-side `~/.hermes/desktop-plugins/` directory; if you use a remote/SSH gateway, installing on the gateway box does nothing. (Example: gateway on your homelab, desktop app on your MacBook → install on the MacBook.)
 
 ```bash
 git clone https://github.com/NousResearch/Hermes-Bot-Mode ~/.hermes/desktop-plugins/hermes-bots
