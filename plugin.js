@@ -1129,14 +1129,26 @@ function createCanonicalChat(name) {
     const sid = res?.stored_session_id
     const runtime = res?.session_id
 
-    if (runtime) {
-      void host
-        .request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
-        .catch(() => undefined)
-    }
-
     if (sid) {
       saveBotMeta(name, { chat: sid })
+    }
+
+    // Mount the session view FIRST, then send the kickoff — submitting into
+    // an unmounted session left the intro reply invisible until reopen.
+    if (sid && typeof host.openSession === 'function') {
+      try {
+        await host.openSession(sid, { profile: name })
+      } catch {
+        // Navigation failure doesn't block the kickoff.
+      }
+    }
+
+    if (runtime) {
+      window.setTimeout(() => {
+        void host
+          .request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
+          .catch(() => undefined)
+      }, 400)
     }
 
     return sid || null
@@ -1260,6 +1272,9 @@ function BotRow({ bot, onEdit }) {
     } else {
       try {
         id = await createCanonicalChat(bot.name)
+
+        // createCanonicalChat already opened the fresh session.
+        return
       } catch {
         id = null
       }
@@ -1267,7 +1282,7 @@ function BotRow({ bot, onEdit }) {
 
     if (id && typeof host.openSession === 'function') {
       void host.openSession(id, { profile: bot.name })
-    } else if (!id && typeof host.newChat === 'function') {
+    } else if (typeof host.newChat === 'function') {
       // Older gateway without profile-scoped session.create — plain draft.
       host.newChat(bot.name)
     } else {
@@ -1890,7 +1905,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
         ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
       })
 
-      saveBotMeta(slug, { shape, color, image, title: title.trim() })
+      saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
       queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
       host.notify({ kind: 'success', message: `Agent "${displayName({ name: slug, title })}" created` })
       reset()
@@ -1900,11 +1915,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
       // Birth the bot's forever chat right away: it introduces itself as
       // the first thing the user sees, and the pin exists from minute one.
       try {
+        // Creates, pins, opens, and kicks off the intro in one flow.
         const sid = await createCanonicalChat(slug)
 
-        if (sid && typeof host.openSession === 'function') {
-          void host.openSession(sid, { profile: slug })
-        } else if (typeof host.newChat === 'function') {
+        if (!sid && typeof host.newChat === 'function') {
           host.newChat(slug)
         }
       } catch {
@@ -2686,7 +2700,14 @@ function BotsPane() {
       void refetch()
     }
   }, [gatewayUp, refetch])
-  const roster = data?.profiles ?? []
+  const allMeta = $botMeta.get()
+  const roster = (data?.profiles ?? []).slice().sort((a, b) => {
+    if (a.is_default !== b.is_default) {
+      return a.is_default ? -1 : 1
+    }
+
+    return (allMeta[b.name]?.created || 0) - (allMeta[a.name]?.created || 0)
+  })
   $lastRoster.set(roster)
   mergeServerMeta(roster)
   pullServerAvatars(roster)
