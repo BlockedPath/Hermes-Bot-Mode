@@ -1247,12 +1247,13 @@ function messagingProtocolSection(name, roster) {
     'into it, like a DM. To message a teammate, run:',
     '',
     '```',
-    'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ': your message"',
+    'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ' (@' + name + '): your message"',
     '```',
     '',
     '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
     'workspace. `-Q` keeps output clean. Always open with the',
-    '"Message from \uD83E\uDD16 ' + name + ':" prefix so they know who is talking.',
+    '"Message from \uD83E\uDD16 ' + name + ' (@' + name + '):" prefix so they know',
+    'who is talking (the @handle lets the app show your avatar to them).',
     'Their reply prints to stdout — relay the relevant part back to the',
     'user, and say which agent it came from. In the rare case the target',
     'has no "Bot Chat" yet, send once WITHOUT -c, then',
@@ -3033,7 +3034,7 @@ export default {
           const note =
             '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
             'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one command:\n' +
-            mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ': <your composed message>"`').join('\n') +
+            mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ' (@' + botHandle(active) + '): <your composed message>"`').join('\n') +
             '\nIf it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
             'Relay the reply back to the user, attributed to that agent.]'
 
