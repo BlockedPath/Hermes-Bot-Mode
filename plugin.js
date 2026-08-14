@@ -1785,7 +1785,8 @@ function AdvancedProfileConfig({ bot, state, setState }) {
             jsx(ScrollArea, {
               style: { maxHeight: 180 },
               children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
-            })
+            }),
+            jsx(HubSkillsSection, { forProfile: bot })
           ]
         })
       ),
@@ -1807,6 +1808,143 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
         })
       )
+    ]
+  })
+}
+
+// ── skills hub section (search + install, shared by create/edit dialogs) ────
+
+function HubSkillsSection({ forProfile }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState(null)
+  const [searching, setSearching] = useState(false)
+  const [installing, setInstalling] = useState(null)
+  const [installed, setInstalled] = useState({})
+
+  const search = async () => {
+    const q = query.trim()
+
+    if (!q || searching) {
+      return
+    }
+
+    setSearching(true)
+    setResults(null)
+
+    try {
+      const res = await host.request('skills.manage', { action: 'search', query: q })
+      setResults(res.results || [])
+    } catch {
+      setResults([])
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const install = async name => {
+    if (installing) {
+      return
+    }
+
+    setInstalling(name)
+
+    try {
+      // With forProfile the install lands in that bot's skills dir
+      // (gateway skills.manage profile scoping); null = launch profile,
+      // which is right at create time — the new bot clones/copies from it.
+      await host.request('skills.manage', {
+        action: 'install',
+        query: name,
+        ...(forProfile ? { profile: forProfile } : {})
+      })
+      setInstalled(prev => ({ ...prev, [name]: true }))
+      host.notify({ kind: 'success', message: `Skill "${name}" installed` })
+    } catch (err) {
+      host.notifyError(err, `Installing "${name}" failed`)
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  return jsxs('div', {
+    className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
+    children: [
+      jsx('div', {
+        className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
+        children: 'Skills Hub'
+      }),
+      jsxs('div', {
+        className: 'flex gap-1.5',
+        children: [
+          jsx(Input, {
+            className: 'h-7 flex-1 text-xs',
+            placeholder: 'Search the hub (community + well-known sources)…',
+            value: query,
+            onChange: event => setQuery(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void search()
+              }
+            }
+          }),
+          jsx(Button, {
+            size: 'sm',
+            variant: 'secondary',
+            disabled: searching || !query.trim(),
+            onClick: () => void search(),
+            children: searching ? 'Searching…' : 'Search'
+          })
+        ]
+      }),
+      results === null
+        ? null
+        : results.length === 0
+          ? jsx('div', {
+              className: 'px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)',
+              children: 'No hub skills matched.'
+            })
+          : jsx(ScrollArea, {
+              style: { maxHeight: 150 },
+              children: jsx('div', {
+                className: 'grid gap-1',
+                children: results.map(r =>
+                  jsxs(
+                    'div',
+                    {
+                      className: 'flex items-center gap-2 text-xs',
+                      children: [
+                        jsxs('div', {
+                          className: 'min-w-0 flex-1',
+                          children: [
+                            jsx('div', { className: 'truncate font-medium', children: r.name }),
+                            r.description
+                              ? jsx('div', {
+                                  className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
+                                  children: r.description
+                                })
+                              : null
+                          ]
+                        }),
+                        installed[r.name]
+                          ? jsx('span', {
+                              className: 'shrink-0 text-[0.65rem] text-(--ui-text-tertiary)',
+                              children: 'Installed ✓'
+                            })
+                          : jsx(Button, {
+                              size: 'sm',
+                              variant: 'ghost',
+                              disabled: installing !== null,
+                              onClick: () => void install(r.name),
+                              children: installing === r.name ? 'Installing…' : 'Install'
+                            })
+                      ]
+                    },
+                    r.name
+                  )
+                )
+              })
+            })
     ]
   })
 }
@@ -2077,16 +2215,34 @@ function CreateAgentDialog({ open, onClose, roster }) {
       return
     }
 
-    host
-      .request('profiles.describe', { name: capSource })
-      .then(res =>
+    Promise.all([
+      host.request('profiles.describe', { name: capSource }),
+      host.request('mcp.catalog', {}).catch(() => null)
+    ])
+      .then(([res, cat]) => {
+        // Full MCP menu = the profile's configured servers + the bundled
+        // catalog (installable). Configured entries win on name clash.
+        const configured = res.mcp_servers || []
+        const have = new Set(configured.map(m => m.name))
+        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+
         setCaps({
           source: capSource,
           skills: res.skills || [],
           toolsets: res.toolsets || [],
-          mcp: res.mcp_servers || []
+          mcp: [
+            ...configured,
+            ...catalog.map(s => ({
+              name: s.name,
+              enabled: false,
+              fromCatalog: true,
+              installed: s.installed,
+              requires: s.requires || [],
+              description: s.description || ''
+            }))
+          ]
         })
-      )
+      })
       .catch(() => setCapsFailed(true))
   }
 
@@ -2415,7 +2571,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                     jsx('div', {
                                       className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
                                       children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
-                                    })
+                                    }),
+                                    jsx(HubSkillsSection, { forProfile: null })
                                   ]
                                 })
                             : advTab === 'toolsets'
@@ -2439,23 +2596,63 @@ function CreateAgentDialog({ open, onClose, roster }) {
                               : caps.mcp.length === 0
                                 ? jsx('div', {
                                     className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                                    children: `No MCP servers configured on ${caps.source}.`
+                                    children: 'No MCP servers configured or in the catalog.'
                                   })
                                 : jsxs('div', {
                                     className: 'grid gap-1.5',
                                     children: [
                                       jsx(ScrollArea, {
                                         style: { maxHeight: 200 },
-                                        children: jsx(CheckList, {
-                                          items: caps.mcp,
-                                          onToggle: (name, enabled) => toggleCap('mcp', name, enabled),
-                                          columns: 1
+                                        children: jsx('div', {
+                                          className: 'grid gap-1',
+                                          children: caps.mcp.map(m => {
+                                            const needsSetup =
+                                              m.fromCatalog && !m.installed && (m.requires || []).length > 0
+
+                                            return jsxs(
+                                              'label',
+                                              {
+                                                className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
+                                                children: [
+                                                  jsx(Checkbox, {
+                                                    checked: !!m.enabled,
+                                                    disabled: needsSetup,
+                                                    onCheckedChange: value => toggleCap('mcp', m.name, Boolean(value))
+                                                  }),
+                                                  jsxs('span', {
+                                                    className: 'min-w-0',
+                                                    children: [
+                                                      jsx('span', { children: m.name }),
+                                                      m.fromCatalog
+                                                        ? jsx('span', {
+                                                            className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+                                                            children: needsSetup
+                                                              ? 'needs setup (' + (m.requires || []).join(', ') + ') — run "hermes mcp" or Settings first'
+                                                              : m.installed
+                                                                ? 'catalog · installed'
+                                                                : 'catalog'
+                                                          })
+                                                        : null,
+                                                      m.description
+                                                        ? jsx('div', {
+                                                            className:
+                                                              'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                                            children: m.description
+                                                          })
+                                                        : null
+                                                    ]
+                                                  })
+                                                ]
+                                              },
+                                              m.name
+                                            )
+                                          })
                                         })
                                       }),
                                       jsx('div', {
                                         className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
                                         children:
-                                          'Checked servers are copied from the main profile’s config to the new agent (definitions only — credentials follow the shared keys setting).'
+                                          'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).'
                                       })
                                     ]
                                   })
