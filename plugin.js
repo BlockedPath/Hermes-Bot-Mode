@@ -2728,10 +2728,23 @@ function BotsPane() {
 
     return Math.max(created, lastMsg)
   }
-  const roster = (data?.profiles ?? []).slice().sort((a, b) => activityOf(b) - activityOf(a))
-  $lastRoster.set(roster)
-  mergeServerMeta(roster)
-  pullServerAvatars(roster)
+  // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
+  // roster the user already had — mixed local+cloud gateways and remotes
+  // waking from sleep fail transiently. Render the last good snapshot with
+  // a notice; the full error card is reserved for "never had a roster".
+  const live = Array.isArray(data?.profiles) ? data.profiles : null
+  const source = live ?? (error ? $lastRoster.get() : [])
+  const roster = source.slice().sort((a, b) => activityOf(b) - activityOf(a))
+
+  if (live) {
+    $lastRoster.set(roster)
+    mergeServerMeta(live)
+    pullServerAvatars(live)
+  }
+
+  const staleNotice = error && !live && roster.length
+    ? 'Roster refresh failed — showing the last good list.' + (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
+    : null
 
   return jsxs('div', {
     className: 'flex h-full flex-col',
@@ -2755,12 +2768,18 @@ function BotsPane() {
           })
         ]
       }),
-      isLoading
+      staleNotice
+        ? jsx('div', {
+            className: 'mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: staleNotice
+          })
+        : null,
+      isLoading && !roster.length
         ? jsx('div', {
             className: 'flex flex-1 items-center justify-center',
             children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
           })
-        : error
+        : error && !roster.length
           ? jsxs('div', {
               className: 'grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)',
               children: [
