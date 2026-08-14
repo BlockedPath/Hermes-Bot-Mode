@@ -54,7 +54,7 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-bots'
