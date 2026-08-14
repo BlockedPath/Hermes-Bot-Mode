@@ -3076,6 +3076,33 @@ export default {
         handler: async draft => {
           const text = draft.text || ''
 
+          // /new inside a bot's canonical forever-chat would fork the
+          // relationship into a scratch session — the one thing Bots mode
+          // promises never happens. Reroute to /compact (same felt effect:
+          // fresh working context, SAME conversation) and say so. Only
+          // guards the canonical chat: Sessions-mode scratchpads on the
+          // same profile keep full /new freedom.
+          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
+
+          if (slashNew) {
+            const activeBot = $selectedBot.get()
+            const meta = activeBot ? $botMeta.get()[activeBot] : null
+            const pinnedId = meta?.chat_pin || null
+            const currentId = host.activeSessionId?.get?.() ?? null
+
+            if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
+              host.notify({
+                kind: 'info',
+                title: 'This chat never resets',
+                message:
+                  'Bot chats are one continuous conversation — compacting instead. ' +
+                  'For a throwaway session with this agent, use Sessions mode.'
+              })
+
+              return { ...draft, text: '/compact' }
+            }
+          }
+
           if (!/(^|\s)@[a-z0-9][a-z0-9_-]*/i.test(text)) {
             return draft
           }
