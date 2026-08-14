@@ -179,16 +179,66 @@ function pushLocalAvatars(roster) {
 
     const image = $botMeta.get()[bot.name]?.image
 
-    if (!image || typeof image !== 'string' || !image.startsWith('data:')) {
+    if (image && typeof image === 'string' && image.startsWith('data:')) {
+      avatarPushInflight.add(bot.name)
+      host
+        .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+        .catch(() => avatarPushInflight.delete(bot.name))
+      continue
+    }
+
+    // Vector shape/color face: no image exists anywhere — rasterize the
+    // live SVG (tagged data-bot-face) to a PNG and push that, so the
+    // inter-agent notices (core #85855/#85888) can show the real pfp.
+    const svg = document.querySelector('svg[data-bot-face=' + JSON.stringify(bot.name) + ']')
+
+    if (!svg) {
       continue
     }
 
     avatarPushInflight.add(bot.name)
-    host
-      .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+    rasterizeSvgToPng(svg, 160)
+      .then(png =>
+        png
+          ? host
+              .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
+              .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+          : Promise.reject(new Error('rasterize failed'))
+      )
       .catch(() => avatarPushInflight.delete(bot.name))
   }
+}
+
+/** Serialize an inline SVG and draw it to a canvas -> PNG data URL. */
+function rasterizeSvgToPng(svgEl, size) {
+  return new Promise(resolve => {
+    try {
+      const clone = svgEl.cloneNode(true)
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+      clone.setAttribute('width', String(size))
+      clone.setAttribute('height', String(size))
+      const markup = new XMLSerializer().serializeToString(clone)
+      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup)
+      const img = new Image()
+
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = size
+          canvas.height = size
+          canvas.getContext('2d').drawImage(img, 0, 0, size, size)
+          resolve(canvas.toDataURL('image/png'))
+        } catch {
+          resolve(null)
+        }
+      }
+      img.onerror = () => resolve(null)
+      img.src = url
+    } catch {
+      resolve(null)
+    }
+  })
 }
 
 function pullServerAvatars(roster) {
@@ -513,6 +563,9 @@ const EYE_X = {
  * left-right), 'error' (X X). Eyes flip light-on-dark for ink/oxblood bodies.
  */
 function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle' }) {
+  // data-bot-face lets the avatar backfill locate this bot's rendered SVG
+  // in the DOM to rasterize it for the server asset store (vector shape
+  // avatars have no image file anywhere otherwise).
   const [blink, setBlink] = useState(false)
   const [scanX, setScanX] = useState(0)
 
@@ -593,6 +646,7 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
           })
 
   return jsxs('svg', {
+    'data-bot-face': name,
     viewBox: '0 0 40 40',
     width: size,
     height: size,
@@ -1275,6 +1329,10 @@ function messagingProtocolSection(name, roster) {
     '',
     '```',
     'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ' (@' + name + '): your message"',
+    '',
+    'Run the send with background=true and notify_on_complete=true on the',
+    'terminal tool, then finish your turn — the reply arrives later as a',
+    'background process notification. Never block waiting for it.',
     '```',
     '',
     '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
@@ -3060,9 +3118,9 @@ export default {
           const senderName = displayName({ name: active, title: activeMeta?.title }, activeMeta)
           const note =
             '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
-            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one command:\n' +
+            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
             mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ' (@' + botHandle(active) + '): <your composed message>"`').join('\n') +
-            '\nIf it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
+            '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. If it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
             'Relay the reply back to the user, attributed to that agent.]'
 
           return { ...draft, text: text + note }
