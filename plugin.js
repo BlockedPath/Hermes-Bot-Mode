@@ -667,6 +667,209 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
   })
 }
 
+// -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
+// Feature-detected: if the gateway predates those RPCs the setup button hides
+// and the row falls back to the "run hermes mcp / Settings" hint. profile is
+// the target bot's profile name (its config is what we write).
+
+async function mcpRpc(method, params) {
+  // Returns { ok, result } or { ok:false, unsupported:true } when the gateway
+  // doesn't know the method (older backend) vs a real error.
+  try {
+    const res = await host.request(method, params)
+    return { ok: true, result: res }
+  } catch (err) {
+    const msg = String((err && err.message) || err || '')
+    if (/unknown method/i.test(msg)) {
+      return { ok: false, unsupported: true }
+    }
+    return { ok: false, error: msg }
+  }
+}
+
+// Probe whether the new lifecycle RPCs exist on this gateway (cached per session).
+let _mcpRpcSupported = null
+async function mcpSetupSupported() {
+  if (_mcpRpcSupported !== null) {
+    return _mcpRpcSupported
+  }
+  const r = await mcpRpc('mcp.servers.list', {})
+  _mcpRpcSupported = !(r.ok === false && r.unsupported)
+  return _mcpRpcSupported
+}
+
+function McpSetupButton({ profile, entry, onDone }) {
+  // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
+  const [phase, setPhase] = useState('idle') // idle | keys | oauth | busy | done | error
+  const [supported, setSupported] = useState(null)
+  const [keyValues, setKeyValues] = useState({})
+  const [message, setMessage] = useState('')
+  const pollRef = useRef(null)
+
+  useEffect(() => {
+    let alive = true
+    mcpSetupSupported().then(ok => {
+      if (alive) setSupported(ok)
+    })
+    return () => {
+      alive = false
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [])
+
+  const isOAuth = (entry.auth || '').toLowerCase() === 'oauth'
+  const requires = entry.requires || []
+
+  const beginKeys = async () => {
+    // Ensure the server exists in the target profile first (add from catalog).
+    setPhase('busy')
+    setMessage('')
+    if (entry.fromCatalog && !entry.installed) {
+      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
+      if (!add.ok) {
+        setPhase('error')
+        setMessage(add.error || 'Could not add server')
+        return
+      }
+    }
+    setPhase(isOAuth ? 'oauth' : 'keys')
+  }
+
+  const submitKeys = async () => {
+    setPhase('busy')
+    for (const k of requires) {
+      const val = (keyValues[k] || '').trim()
+      if (!val) {
+        continue
+      }
+      const r = await mcpRpc('mcp.servers.set_api_key', { profile, name: entry.name, env_var: k, value: val })
+      if (!r.ok) {
+        setPhase('error')
+        setMessage(r.error || ('Failed to set ' + k))
+        return
+      }
+    }
+    // Verify via test.
+    const t = await mcpRpc('mcp.servers.test', { profile, name: entry.name })
+    if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
+      setPhase('done')
+      host.notify({ kind: 'success', message: entry.name + ' configured' })
+      onDone && onDone()
+    } else {
+      setPhase('error')
+      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || 'Server test failed after setup')
+    }
+  }
+
+  const beginOAuth = async () => {
+    setPhase('busy')
+    setMessage('')
+    if (entry.fromCatalog && !entry.installed) {
+      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
+      if (!add.ok) {
+        setPhase('error')
+        setMessage(add.error || 'Could not add server')
+        return
+      }
+    }
+    const start = await mcpRpc('mcp.servers.oauth.start', { profile, name: entry.name })
+    const payload = start.result && (start.result.result || start.result)
+    const authUrl = payload && (payload.auth_url || payload.verification_url)
+    const sessionId = payload && payload.session_id
+    if (!start.ok || !authUrl || !sessionId) {
+      setPhase('error')
+      setMessage((start.error) || 'Could not start OAuth')
+      return
+    }
+    // Open the auth URL in the native browser, same as provider OAuth.
+    try {
+      if (host.openExternal) {
+        host.openExternal(authUrl)
+      } else if (typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.openExternal) {
+        window.hermesDesktop.openExternal(authUrl)
+      } else {
+        window.open(authUrl, '_blank')
+      }
+    } catch {
+      /* fall through to poll; user can open the URL from the toast */
+    }
+    setPhase('oauth')
+    setMessage('Complete sign-in in your browser...')
+    pollRef.current = setInterval(async () => {
+      const poll = await mcpRpc('mcp.servers.oauth.poll', { profile, name: entry.name, session_id: sessionId })
+      const pd = poll.result && (poll.result.result || poll.result)
+      const status = pd && pd.status
+      if (status === 'approved') {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+        setPhase('done')
+        host.notify({ kind: 'success', message: entry.name + ' authenticated' })
+        onDone && onDone()
+      } else if (status === 'error') {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+        setPhase('error')
+        setMessage((pd && pd.error_message) || 'OAuth failed')
+      }
+    }, 2000)
+  }
+
+  if (supported === false) {
+    return jsx('span', {
+      className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+      children: 'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'
+    })
+  }
+  if (phase === 'done') {
+    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-success,#22c55e)', children: 'set up \u2713' })
+  }
+  if (phase === 'keys') {
+    return jsxs('div', {
+      className: 'mt-1 grid gap-1',
+      children: [
+        ...requires.map(k =>
+          jsx(Input, {
+            key: k,
+            type: 'password',
+            className: 'h-6 text-[0.7rem]',
+            placeholder: k,
+            value: keyValues[k] || '',
+            onChange: e => setKeyValues(prev => ({ ...prev, [k]: e.target.value }))
+          }, k)
+        ),
+        jsxs('div', {
+          className: 'flex gap-1',
+          children: [
+            jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => void submitKeys(), children: 'Save & test' }),
+            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPhase('idle'), children: 'Cancel' })
+          ]
+        })
+      ]
+    })
+  }
+  if (phase === 'oauth') {
+    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: message || 'Authorizing\u2026' })
+  }
+  if (phase === 'busy') {
+    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: 'Working\u2026' })
+  }
+  if (phase === 'error') {
+    return jsxs('span', {
+      className: 'ml-1.5 text-[0.65rem] text-(--ui-danger,#ef4444)',
+      children: [(message || 'Setup failed') + ' ', jsx('button', { className: 'underline', onClick: () => setPhase('idle'), children: 'retry' })]
+    })
+  }
+  // idle
+  return jsx('button', {
+    className: 'ml-1.5 text-[0.65rem] text-(--ui-accent,#4f9cf9) underline',
+    onClick: () => void (isOAuth ? beginOAuth() : beginKeys()),
+    children: isOAuth ? 'Sign in\u2026' : 'Set up\u2026'
+  })
+}
+
 function botAppearance(name, meta) {
   // The primary profile is literally named "default"; the SDK's profileColor
   // can hand it a near-black that renders as an ugly black square, and any
@@ -1743,9 +1946,14 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 
   if (!loaded) {
     setLoaded(true)
-    host
-      .request('profiles.describe', { name: bot })
-      .then(res => {
+    Promise.all([
+      host.request('profiles.describe', { name: bot }),
+      host.request('mcp.catalog', { profile: bot }).catch(() => null)
+    ])
+      .then(([res, cat]) => {
+        const configured = res.mcp_servers || []
+        const have = new Set(configured.map(m => m.name))
+        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
         setState(prev => ({
           ...prev,
           provider: res.model?.provider || '',
@@ -1753,6 +1961,18 @@ function AdvancedProfileConfig({ bot, state, setState }) {
           soul: res.soul || '',
           skills: res.skills || [],
           toolsets: res.toolsets || [],
+          mcp: [
+            ...configured.map(m => ({ ...m, enabled: m.enabled !== false })),
+            ...catalog.map(s => ({
+              name: s.name,
+              enabled: false,
+              fromCatalog: true,
+              installed: s.installed,
+              auth: s.auth,
+              requires: s.requires || [],
+              description: s.description || ''
+            }))
+          ],
           loaded: true
         }))
       })
@@ -1791,8 +2011,17 @@ function AdvancedProfileConfig({ bot, state, setState }) {
       toolsets: prev.toolsets.map(t => (t.name === name ? { ...t, enabled } : t))
     }))
 
+  const toggleMcp = (name, enabled) =>
+    setState(prev => ({
+      ...prev,
+      dirtyMcp: true,
+      mcp: (prev.mcp || []).map(m => (m.name === name ? { ...m, enabled } : m))
+    }))
+
   const enabledSkills = state.skills.filter(s => s.enabled).length
   const enabledToolsets = state.toolsets.filter(t => t.enabled).length
+  const mcpList = state.mcp || []
+  const enabledMcp = mcpList.filter(m => m.enabled).length
 
   return jsxs('div', {
     className: 'grid gap-4',
@@ -1836,6 +2065,65 @@ function AdvancedProfileConfig({ bot, state, setState }) {
             style: { maxHeight: 160 },
             children: jsx(CheckList, { items: state.toolsets, onToggle: toggleToolset, columns: 2 })
           })
+        })
+      ),
+      labeled(
+        `MCP servers (${enabledMcp}/${mcpList.length} enabled)`,
+        jsx('div', {
+          className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
+          children: mcpList.length === 0
+            ? jsx('div', {
+                className: 'px-1 py-2 text-center text-xs text-(--ui-text-tertiary)',
+                children: 'No MCP servers configured or in the catalog.'
+              })
+            : jsx(ScrollArea, {
+                style: { maxHeight: 180 },
+                children: jsx('div', {
+                  className: 'grid gap-1',
+                  children: mcpList.map(m => {
+                    const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
+                    return jsxs(
+                      'label',
+                      {
+                        className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
+                        children: [
+                          jsx(Checkbox, {
+                            checked: !!m.enabled,
+                            disabled: needsSetup,
+                            onCheckedChange: value => toggleMcp(m.name, Boolean(value))
+                          }),
+                          jsxs('span', {
+                            className: 'min-w-0',
+                            children: [
+                              jsx('span', { children: m.name }),
+                              m.fromCatalog && !needsSetup
+                                ? jsx('span', {
+                                    className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+                                    children: m.installed ? 'catalog · installed' : 'catalog'
+                                  })
+                                : null,
+                              needsSetup
+                                ? jsx(McpSetupButton, {
+                                    profile: bot,
+                                    entry: m,
+                                    onDone: () => toggleMcp(m.name, true)
+                                  })
+                                : null,
+                              m.description
+                                ? jsx('div', {
+                                    className: 'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                    children: m.description
+                                  })
+                                : null
+                            ]
+                          })
+                        ]
+                      },
+                      m.name
+                    )
+                  })
+                })
+              })
         })
       ),
       labeled(
@@ -2108,10 +2396,12 @@ function emptyAdvancedState() {
     soul: '',
     skills: [],
     toolsets: [],
+    mcp: [],
     dirtyModel: false,
     dirtySoul: false,
     dirtySkills: false,
-    dirtyToolsets: false
+    dirtyToolsets: false,
+    dirtyMcp: false
   }
 }
 
@@ -2137,6 +2427,10 @@ async function applyAdvancedConfig(bot, state) {
     const enabled = state.toolsets.filter(t => t.enabled)
     // All enabled (or none) = clear the pin; otherwise pin the checked set.
     payload.enabled_toolsets = enabled.length === all || enabled.length === 0 ? [] : enabled.map(t => t.name)
+  }
+
+  if (state.dirtyMcp) {
+    payload.enabled_mcp_servers = (state.mcp || []).filter(m => m.enabled).map(m => m.name)
   }
 
   if (Object.keys(payload).length === 1) {
@@ -2215,7 +2509,7 @@ function EditProfileDialog({ bot, open, onClose }) {
       }
     }
 
-    if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets)) {
+    if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
       try {
         const res = await applyAdvancedConfig(bot.name, adv)
         const failed = Object.entries(res?.applied || {}).filter(([, ok]) => !ok)
@@ -2315,6 +2609,10 @@ function EditProfileDialog({ bot, open, onClose }) {
 
 function CreateAgentDialog({ open, onClose, roster }) {
   const [name, setName] = useState('')
+  // Create mode: the profile doesn't exist yet, so per-profile MCP credential
+  // setup can't target it — the row shows a "save the agent first" hint and
+  // the live setup UI lives in Edit Profile (where bot.name exists).
+  const setupProfile = null
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [shape, setShape] = useState('circle')
@@ -2796,10 +3094,19 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                                         ? jsx('span', {
                                                             className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
                                                             children: needsSetup
-                                                              ? 'needs setup (' + (m.requires || []).join(', ') + ') — run "hermes mcp" or Settings first'
+                                                              ? (setupProfile
+                                                                  ? null
+                                                                  : 'needs setup (' + (m.requires || []).join(', ') + ') — save the agent first, then set up here')
                                                               : m.installed
                                                                 ? 'catalog · installed'
                                                                 : 'catalog'
+                                                          })
+                                                        : null,
+                                                      needsSetup && setupProfile
+                                                        ? jsx(McpSetupButton, {
+                                                            profile: setupProfile,
+                                                            entry: m,
+                                                            onDone: () => toggleCap('mcp', m.name, true)
                                                           })
                                                         : null,
                                                       m.description
