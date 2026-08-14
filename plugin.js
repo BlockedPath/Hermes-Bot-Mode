@@ -68,6 +68,51 @@ let pluginCtx = null
 /** Live roster snapshot for imperative handlers (context menus). */
 const $lastRoster = atom([])
 
+/** Bots with chat activity the user hasn't seen yet (name -> true).
+ *  Fed by the roster poll's activity watermark, so it catches EVERY
+ *  delivery path: RPC, CLI (bot-to-bot), cron runs, other machines. */
+const $botUnread = atom({})
+
+// last_active watermark per bot, seeded on first poll so a fresh mount
+// doesn't mark ancient history unread.
+const rosterWatermarks = new Map()
+let watermarksSeeded = false
+
+/** Detect new inbound activity from a fresh roster: last_active moved past
+ *  the watermark for a bot whose chat isn't on screen -> unread + toast. */
+function trackInboundActivity(roster) {
+  const seeding = !watermarksSeeded
+  watermarksSeeded = true
+
+  for (const bot of roster) {
+    const ts = bot.last_session?.last_active || 0
+    const prev = rosterWatermarks.get(bot.name) || 0
+    rosterWatermarks.set(bot.name, Math.max(prev, ts))
+
+    if (seeding || ts <= prev) {
+      continue
+    }
+
+    // Activity in the bot the user is currently looking at is already
+    // visible — never badge the open chat.
+    if ($selectedBot.get() === bot.name) {
+      continue
+    }
+
+    const meta = $botMeta.get()[bot.name]
+    const label = displayName(bot, meta)
+    const preview = (bot.last_session?.preview || '').trim()
+    const inbound = /^Message from/i.test(preview)
+
+    $botUnread.set({ ...$botUnread.get(), [bot.name]: true })
+    host.notify({
+      kind: 'info',
+      title: inbound ? `\uD83E\uDD16 New message for ${label}` : `${label} has new activity`,
+      message: preview.slice(0, 140) || 'Open the chat to see it.'
+    })
+  }
+}
+
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
  *  (the bot you're actually chatting with) and roster clicks. */
 const $selectedBot = atom('default')
@@ -1078,7 +1123,7 @@ function useRoster() {
   return useQuery({
     queryKey: ROSTER_KEY,
     queryFn: () => host.request('profiles.list', {}),
-    refetchInterval: 12000,
+    refetchInterval: 5000,
     staleTime: 5000,
     // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
     // retrying instead of latching a terminal error card.
@@ -1263,10 +1308,17 @@ function BotRow({ bot, onEdit }) {
   // active profile's row only.
   const gatewayState = useValue(host.state.gateway)
   const botMood = isActive && gatewayState === 'busy' ? 'work' : 'idle'
+  const unread = Boolean(useValue($botUnread)[bot.name])
 
   const open = async () => {
     haptic('tap')
     $selectedBot.set(bot.name)
+
+    if ($botUnread.get()[bot.name]) {
+      const next = { ...$botUnread.get() }
+      delete next[bot.name]
+      $botUnread.set(next)
+    }
 
     let id = meta?.chat
 
@@ -1340,6 +1392,12 @@ function BotRow({ bot, onEdit }) {
                     : null
                 ]
               }),
+              unread
+                ? jsx('span', {
+                    className: 'size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
+                    'aria-label': 'unread'
+                  })
+                : null,
               last
                 ? jsx('span', {
                     className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
@@ -2746,6 +2804,7 @@ function BotsPane() {
     $lastRoster.set(roster)
     mergeServerMeta(live)
     pullServerAvatars(live)
+    trackInboundActivity(live)
   }
 
   const staleNotice = error && !live && roster.length
