@@ -1088,6 +1088,13 @@ function displayName(bot, meta) {
     return meta.title.trim()
   }
 
+  // The primary profile is literally named "default" — as a bot identity
+  // that reads like nobody bothered. Present it as Hermes (the agent it is)
+  // unless the user gives it a real title.
+  if ((bot.name || '').trim().toLowerCase() === 'default' && !bot.title) {
+    return 'Hermes'
+  }
+
   const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()
   return raw.replace(/\b\w/g, ch => ch.toUpperCase())
 }
@@ -1202,7 +1209,7 @@ function BotRow({ bot, onEdit }) {
                     className: 'truncate text-[0.8125rem] font-medium',
                     children: displayName(bot, meta)
                   }),
-                  bot.name && meta?.title?.trim() && bot.name.toLowerCase() !== meta.title.trim().toLowerCase()
+                  bot.name && bot.name.toLowerCase() !== displayName(bot, meta).toLowerCase()
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
                         children: `@${bot.name}`
@@ -1667,7 +1674,7 @@ function EditProfileDialog({ bot, open, onClose }) {
         jsxs(DialogHeader, {
           children: [
             jsx(DialogTitle, { children: 'Edit Profile' }),
-            jsx(DialogDescription, { children: `Appearance and role for ${bot.name}.` })
+            jsx(DialogDescription, { children: `Appearance and role for ${displayName(bot, null)} (${bot.name}).` })
           ]
         }),
         jsxs('div', {
@@ -2492,7 +2499,7 @@ function RoutinesPane() {
                     className: 'truncate text-xs font-semibold',
                     children: displayName({ name: bot }, meta)
                   }),
-                  meta?.title?.trim() && bot.toLowerCase() !== meta.title.trim().toLowerCase()
+                  bot.toLowerCase() !== displayName({ name: bot }, meta).toLowerCase()
                     ? jsx('span', {
                         className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
                         children: `@${bot}`
