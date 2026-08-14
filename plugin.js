@@ -166,7 +166,34 @@ function saveBotMeta(name, patch) {
  *  local cache doesn't already have an image for them. Fire-and-forget. */
 const avatarFetchInflight = new Set()
 
+const avatarPushInflight = new Set()
+
+/** Backfill: local meta has art the server lacks -> profiles.set_asset.
+ *  Server-side avatars power the inter-agent notice pfp (core #85855) and
+ *  cross-machine roster art, so local-only images are a bug, not a state. */
+function pushLocalAvatars(roster) {
+  for (const bot of roster) {
+    if (bot.has_avatar || avatarPushInflight.has(bot.name)) {
+      continue
+    }
+
+    const image = $botMeta.get()[bot.name]?.image
+
+    if (!image || typeof image !== 'string' || !image.startsWith('data:')) {
+      continue
+    }
+
+    avatarPushInflight.add(bot.name)
+    host
+      .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
+      .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
+      .catch(() => avatarPushInflight.delete(bot.name))
+  }
+}
+
 function pullServerAvatars(roster) {
+  pushLocalAvatars(roster)
+
   for (const bot of roster) {
     if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
       continue
