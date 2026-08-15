@@ -5,59 +5,455 @@
 
 // src/plugin-entry.mjs
 import {
-  atom,
-  Button,
+  atom as atom2,
+  Button as Button2,
   Checkbox,
   cn,
-  Codicon,
+  Codicon as Codicon2,
   COMPOSER_AREAS,
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  Dialog,
-  DialogContent,
+  Dialog as Dialog2,
+  DialogContent as DialogContent2,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  EmptyState,
+  DialogFooter as DialogFooter2,
+  DialogHeader as DialogHeader2,
+  DialogTitle as DialogTitle2,
+  EmptyState as EmptyState2,
   GlyphSpinner,
   haptic,
-  host,
-  Input,
+  host as host2,
+  Input as Input2,
   PALETTE_AREA,
   profileColor,
   queryClient,
   relativeTime,
-  ScrollArea,
+  ScrollArea as ScrollArea2,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
   Switch,
-  Textarea,
+  Textarea as Textarea2,
   Tip,
   useQuery,
-  useValue
+  useValue as useValue2
 } from "@hermes/plugin-sdk";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState as useState2 } from "react";
+import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+
+// src/groups/GroupsSection.mjs
+import { Button, Codicon, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, EmptyState, host, Input, ScrollArea, Textarea, useValue } from "@hermes/plugin-sdk";
+import { useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
+
+// src/groups/store.mjs
+import { atom } from "@hermes/plugin-sdk";
+
+// lib/validate.mjs
+var NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function shellQuote(arg) {
+  return `'${String(arg).replace(/'/g, `'\\''`)}'`;
+}
+
+// src/groups/logic.mjs
+function randomId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function assertGroupName(name) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new Error("Group name is required");
+  }
+  if (name.length > 64) throw new Error("Group name must be ≤64 characters");
+  if (/[\0-\x1f\x7f/\\]/.test(name)) {
+    throw new Error("Group name contains invalid characters");
+  }
+}
+function assertMemberId(id) {
+  if (typeof id !== "string" || !NAME_RE.test(id)) {
+    throw new Error(`Invalid member id "${id}" — must match ${NAME_RE.source}`);
+  }
+}
+function assertGroupId(id) {
+  if (typeof id !== "string" || !UUID_RE.test(id)) {
+    throw new Error(`Invalid group id "${id}"`);
+  }
+}
+function createGroupMeta({ name, memberIds = [], description = "" }) {
+  assertGroupName(name);
+  if (!Array.isArray(memberIds)) throw new Error("memberIds must be an array");
+  const deduped = [...new Set(memberIds)];
+  for (const m of deduped) assertMemberId(m);
+  if (typeof description !== "string") throw new Error("description must be a string");
+  if (description.length > 500) throw new Error("description must be ≤500 characters");
+  const id = randomId();
+  return {
+    id,
+    name: name.trim(),
+    description: description.trim(),
+    memberIds: deduped,
+    createdAt: Date.now(),
+    room: []
+  };
+}
+function buildFanOut({ group, senderName, content }) {
+  if (!group || typeof group !== "object") throw new Error("group is required");
+  assertGroupId(group.id);
+  assertMemberId(senderName);
+  if (typeof content !== "string") throw new Error("content must be a string");
+  if (!content.trim()) throw new Error("content must not be empty");
+  if (content.length > 4e3) throw new Error("content must be ≤4000 characters");
+  if (!Array.isArray(group.memberIds) || !group.memberIds.includes(senderName)) {
+    throw new Error(`Sender "${senderName}" is not a member of group "${group.name}"`);
+  }
+  const msg = {
+    id: randomId(),
+    groupId: group.id,
+    senderName,
+    content,
+    timestamp: Date.now()
+  };
+  const roomLabel = `[Room: ${group.name}]`;
+  const prefix = `${roomLabel} 🤖 ${senderName} (@${senderName}): `;
+  const fullText = prefix + content;
+  const fanOutCommands = group.memberIds.filter((m) => m !== senderName).map((member) => {
+    assertMemberId(member);
+    return {
+      targetAgent: member,
+      // Shell form — for `sh -c` runners. POSIX single-quoted, no expansion.
+      cliCommand: `hermes -p ${member} chat --in ~ -c ${shellQuote(roomLabel)} -Q -q ${shellQuote(fullText)}`,
+      // Argv form — for host.request("cli.exec", { argv }). No quoting needed.
+      argv: ["-p", member, "chat", "--in", "~", "-c", roomLabel, "-Q", "-q", fullText]
+    };
+  });
+  return { message: msg, fanOutCommands };
+}
+
+// src/groups/store.mjs
+var $groups = atom([]);
+function hydrateGroups(value) {
+  if (!Array.isArray(value)) return;
+  const valid = value.filter(
+    (g) => g && typeof g === "object" && typeof g.id === "string" && typeof g.name === "string" && Array.isArray(g.memberIds)
+  );
+  $groups.set(valid);
+}
+function persistGroups(pluginCtx2, next) {
+  $groups.set(next);
+  try {
+    Promise.resolve(pluginCtx2?.storage?.set?.("groups", next)).catch(() => void 0);
+  } catch {
+  }
+}
+function createGroup({ name, memberIds, description }) {
+  const meta = createGroupMeta({ name, memberIds, description });
+  const next = [...$groups.get(), meta];
+  return { meta, next };
+}
+function getGroup(id) {
+  return $groups.get().find((g) => g.id === id) || null;
+}
+function postToGroup({ groupId, senderName, content }) {
+  const groups = $groups.get();
+  const idx = groups.findIndex((g) => g.id === groupId);
+  if (idx === -1) throw new Error(`Group ${groupId} not found`);
+  const group = groups[idx];
+  const { message, fanOutCommands } = buildFanOut({ group, senderName, content });
+  const updated = { ...group, room: [...group.room || [], message] };
+  const next = groups.slice();
+  next[idx] = updated;
+  return { message, fanOutCommands, updated, next };
+}
+
+// src/groups/GroupsSection.mjs
+var pluginCtxRef = null;
+function setGroupsPluginCtx(ctx) {
+  pluginCtxRef = ctx;
+}
+function CreateGroupDialog({ open, onClose, roster }) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [selected, setSelected] = useState({});
+  const [error, setError] = useState("");
+  const toggle = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
+  const memberIds = Object.keys(selected).filter((k) => selected[k]);
+  const handleCreate = () => {
+    setError("");
+    try {
+      const { meta, next } = createGroup({ name, memberIds, description });
+      persistGroups(pluginCtxRef, next);
+      host.notify({ kind: "success", message: `Group "${meta.name}" created` });
+      setName("");
+      setDescription("");
+      setSelected({});
+      onClose();
+    } catch (e) {
+      setError(e?.message || String(e));
+    }
+  };
+  return jsx(Dialog, {
+    open,
+    onOpenChange: (o) => !o && onClose(),
+    children: jsx(DialogContent, {
+      children: jsxs("div", {
+        className: "grid gap-4",
+        children: [
+          jsx(DialogHeader, { children: jsx(DialogTitle, { children: "New Group" }) }),
+          error ? jsx("div", { className: "text-sm text-red-500", children: error }) : null,
+          jsxs("div", {
+            className: "grid gap-2",
+            children: [
+              jsx("label", { className: "text-sm font-medium", children: "Group name" }),
+              jsx(Input, {
+                value: name,
+                onChange: (e) => setName(e.target.value),
+                placeholder: "Engineering"
+              })
+            ]
+          }),
+          jsxs("div", {
+            className: "grid gap-2",
+            children: [
+              jsx("label", { className: "text-sm font-medium", children: "Description (optional)" }),
+              jsx(Input, {
+                value: description,
+                onChange: (e) => setDescription(e.target.value),
+                placeholder: "Shared channel"
+              })
+            ]
+          }),
+          jsxs("div", {
+            className: "grid gap-2",
+            children: [
+              jsx("label", { className: "text-sm font-medium", children: "Members" }),
+              roster.length === 0 ? jsx("div", { className: "text-sm text-muted-foreground", children: "No agents available" }) : jsx(ScrollArea, {
+                className: "max-h-40 rounded border p-2",
+                children: jsx("div", {
+                  className: "grid gap-1",
+                  children: roster.map(
+                    (bot) => jsxs(
+                      "label",
+                      {
+                        className: "flex items-center gap-2 text-sm",
+                        children: [
+                          jsx("input", {
+                            type: "checkbox",
+                            checked: Boolean(selected[bot.name]),
+                            onChange: () => toggle(bot.name)
+                          }),
+                          jsx("span", { children: bot.name }),
+                          bot.title ? jsx("span", {
+                            className: "text-xs text-muted-foreground",
+                            children: `— ${bot.title}`
+                          }) : null
+                        ]
+                      },
+                      bot.name
+                    )
+                  )
+                })
+              })
+            ]
+          }),
+          jsx(DialogFooter, {
+            children: jsxs("div", {
+              className: "flex justify-end gap-2",
+              children: [
+                jsx(Button, { variant: "ghost", onClick: onClose, children: "Cancel" }),
+                jsx(Button, { onClick: handleCreate, children: "Create" })
+              ]
+            })
+          })
+        ]
+      })
+    })
+  });
+}
+function GroupRow({ group, onPost }) {
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const lastMsg = group.room && group.room.length ? group.room[group.room.length - 1] : null;
+  const preview = lastMsg ? `${lastMsg.senderName}: ${String(lastMsg.content).slice(0, 60)}` : `${group.memberIds.length} members — no messages yet`;
+  const handleSend = async () => {
+    if (!draft.trim()) return;
+    setSending(true);
+    try {
+      await onPost(group.id, draft);
+      setDraft("");
+    } finally {
+      setSending(false);
+    }
+  };
+  return jsxs("div", {
+    className: "rounded border border-(--ui-stroke-secondary) p-2",
+    children: [
+      jsxs("button", {
+        className: "flex w-full items-center justify-between text-left",
+        onClick: () => setExpanded((v) => !v),
+        children: [
+          jsxs("div", {
+            className: "min-w-0",
+            children: [
+              jsx("div", { className: "truncate text-sm font-medium", children: group.name }),
+              jsx("div", { className: "truncate text-xs text-muted-foreground", children: preview })
+            ]
+          }),
+          jsx(Codicon, {
+            name: expanded ? "chevron-up" : "chevron-down",
+            className: "shrink-0 text-muted-foreground"
+          })
+        ]
+      }),
+      expanded ? jsxs("div", {
+        className: "mt-2 grid gap-2",
+        children: [
+          jsxs("div", {
+            className: "text-xs text-muted-foreground",
+            children: ["Members: ", group.memberIds.join(", ")]
+          }),
+          group.description ? jsx("div", { className: "text-xs", children: group.description }) : null,
+          group.room && group.room.length ? jsx(ScrollArea, {
+            className: "max-h-32 rounded bg-muted/30 p-2",
+            children: jsx("div", {
+              className: "grid gap-1",
+              children: group.room.slice(-10).map(
+                (m) => jsxs(
+                  "div",
+                  {
+                    className: "text-xs",
+                    children: [
+                      jsx("span", { className: "font-medium", children: `${m.senderName}: ` }),
+                      jsx("span", { children: m.content })
+                    ]
+                  },
+                  m.id
+                )
+              )
+            })
+          }) : jsx("div", { className: "text-xs text-muted-foreground", children: "No messages yet" }),
+          jsxs("div", {
+            className: "flex gap-2",
+            children: [
+              jsx(Textarea, {
+                value: draft,
+                onChange: (e) => setDraft(e.target.value),
+                placeholder: "Message group…",
+                rows: 2,
+                className: "min-h-[60px] flex-1"
+              }),
+              jsx(Button, {
+                onClick: handleSend,
+                disabled: sending || !draft.trim(),
+                children: sending ? "Sending…" : "Send"
+              })
+            ]
+          })
+        ]
+      }) : null
+    ]
+  });
+}
+function GroupsSection({ roster }) {
+  const groups = useValue($groups);
+  const [createOpen, setCreateOpen] = useState(false);
+  const handlePost = async (groupId, content) => {
+    const active = (host.state.profile.get() || "default").trim() || "default";
+    const group = getGroup(groupId);
+    if (!group) {
+      host.notify({ kind: "error", message: "Group not found" });
+      return;
+    }
+    let sender = active;
+    if (!group.memberIds.includes(sender)) {
+      if (group.memberIds.length === 0) {
+        host.notify({ kind: "error", message: "Group has no members" });
+        return;
+      }
+      sender = group.memberIds[0];
+    }
+    let result;
+    try {
+      result = postToGroup({ groupId, senderName: sender, content });
+    } catch (e) {
+      host.notify({ kind: "error", message: e?.message || String(e) });
+      throw e;
+    }
+    persistGroups(pluginCtxRef, result.next);
+    const failures = [];
+    for (const cmd of result.fanOutCommands) {
+      try {
+        await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
+      } catch {
+        failures.push(cmd.targetAgent);
+      }
+    }
+    if (failures.length === 0) {
+      host.notify({ kind: "success", message: `Sent to ${result.fanOutCommands.length} members` });
+    } else if (failures.length < result.fanOutCommands.length) {
+      host.notify({ kind: "info", message: `Sent, but ${failures.join(", ")} failed` });
+    } else if (result.fanOutCommands.length > 0) {
+      host.notify({ kind: "error", message: `Fan-out failed for ${failures.join(", ")}` });
+    } else {
+      host.notify({ kind: "info", message: "Message saved (no other members to notify)" });
+    }
+  };
+  return jsxs("div", {
+    className: "border-t border-(--ui-stroke-secondary) p-2",
+    children: [
+      jsxs("div", {
+        className: "mb-2 flex items-center justify-between",
+        children: [
+          jsxs("div", {
+            className: "text-sm font-semibold",
+            children: ["Groups", groups.length ? ` (${groups.length})` : ""]
+          }),
+          jsx(Button, {
+            variant: "ghost",
+            size: "sm",
+            onClick: () => setCreateOpen(true),
+            children: jsxs("span", {
+              className: "flex items-center gap-1",
+              children: [jsx(Codicon, { name: "add" }), "New Group"]
+            })
+          })
+        ]
+      }),
+      groups.length === 0 ? jsx(EmptyState, {
+        icon: "organization",
+        title: "No groups yet",
+        description: "Create a group to message multiple agents at once."
+      }) : jsx("div", {
+        className: "grid gap-2",
+        children: groups.map((g) => jsx(GroupRow, { group: g, onPost: handlePost }, g.id))
+      }),
+      jsx(CreateGroupDialog, { open: createOpen, onClose: () => setCreateOpen(false), roster })
+    ]
+  });
+}
+
+// src/plugin-entry.mjs
 var ID = "hermes-bots";
 var ROSTER_KEY = [ID, "roster"];
 var ROUTINES_KEY = [ID, "routines"];
-var NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-function shellQuote(arg) {
+var NAME_RE2 = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+function shellQuote2(arg) {
   return `'${String(arg).replace(/'/g, `'\\''`)}'`;
 }
 function sanitizeTitle(title, max = 80) {
   return String(title || "").replace(/[\0-\x1f\x7f"'`$\\]/g, "").slice(0, max).trim();
 }
 var pluginCtx = null;
-var $lastRoster = atom([]);
-var $botUnread = atom({});
+var $lastRoster = atom2([]);
+var $botUnread = atom2({});
 var rosterWatermarks = /* @__PURE__ */ new Map();
 var watermarksSeeded = false;
 function resetWatermarks() {
@@ -82,15 +478,15 @@ function trackInboundActivity(roster) {
     const preview = (bot.last_session?.preview || "").trim();
     const inbound = /^Message from/i.test(preview);
     $botUnread.set({ ...$botUnread.get(), [bot.name]: true });
-    host.notify({
+    host2.notify({
       kind: "info",
       title: inbound ? `🤖 New message for ${label}` : `${label} has new activity`,
       message: preview.slice(0, 140) || "Open the chat to see it."
     });
   }
 }
-var $selectedBot = atom("default");
-var $botMeta = atom({});
+var $selectedBot = atom2("default");
+var $botMeta = atom2({});
 function migrateChatPin(entry) {
   if (!entry || typeof entry !== "object") return entry;
   if (!entry.chat_pin) return entry;
@@ -113,16 +509,16 @@ function saveBotMeta(name, patch) {
   }
   try {
     const { image, pet, ...rest } = next[name] || {};
-    host.request("profiles.configure", { name, ui_meta: { "hermes-bots": rest } }).catch(() => void 0);
+    host2.request("profiles.configure", { name, ui_meta: { "hermes-bots": rest } }).catch(() => void 0);
   } catch {
   }
   if ("image" in patch) {
     try {
-      const req = patch.image ? host.request("profiles.set_asset", {
+      const req = patch.image ? host2.request("profiles.set_asset", {
         name,
         asset: "avatar",
         data: patch.image
-      }) : host.request("profiles.set_asset", {
+      }) : host2.request("profiles.set_asset", {
         name,
         asset: "avatar",
         clear: true
@@ -142,7 +538,7 @@ function pushLocalAvatars(roster) {
     const image = $botMeta.get()[bot.name]?.image;
     if (image && typeof image === "string" && image.startsWith("data:")) {
       avatarPushInflight.add(bot.name);
-      host.request("profiles.set_asset", {
+      host2.request("profiles.set_asset", {
         name: bot.name,
         asset: "avatar",
         data: image
@@ -161,7 +557,7 @@ function pushLocalAvatars(roster) {
     }
     avatarPushInflight.add(bot.name);
     rasterizeSvgToPng(svg, 160).then(
-      (png) => png ? host.request("profiles.set_asset", {
+      (png) => png ? host2.request("profiles.set_asset", {
         name: bot.name,
         asset: "avatar",
         data: png
@@ -211,7 +607,7 @@ function pullServerAvatars(roster) {
       continue;
     }
     avatarFetchInflight.add(bot.name);
-    host.request("profiles.get_asset", { name: bot.name, asset: "avatar" }).then((res) => {
+    host2.request("profiles.get_asset", { name: bot.name, asset: "avatar" }).then((res) => {
       if (res?.found && res.data) {
         const current = $botMeta.get();
         $botMeta.set({
@@ -266,7 +662,7 @@ async function duplicateBot(bot, roster) {
   if (!name) {
     throw new Error("No free name for the duplicate.");
   }
-  await host.request("profiles.create", {
+  await host2.request("profiles.create", {
     name,
     clone_from: base,
     description: bot.description || ""
@@ -382,16 +778,16 @@ function shapeNode(shape, color, botName = "agent") {
       strokeLinecap: "round",
       strokeLinejoin: "round"
     };
-    return jsxs("g", {
+    return jsxs2("g", {
       children: [
-        ring ? jsx("path", {
+        ring ? jsx2("path", {
           d: ring,
           fill: "none",
           stroke: color,
           strokeWidth: 1.2,
           opacity: 0.5
         }) : null,
-        jsx("path", { d: strokes, ...sw })
+        jsx2("path", { d: strokes, ...sw })
       ]
     });
   }
@@ -417,53 +813,53 @@ function shapeNode(shape, color, botName = "agent") {
   switch (shape) {
     // ── platonic solids ──
     case "tetrahedron":
-      return jsxs("g", {
+      return jsxs2("g", {
         children: [
-          jsx("path", { d: "M20 5 L36 33 L4 33 Z", ...face }),
-          jsx("path", {
+          jsx2("path", { d: "M20 5 L36 33 L4 33 Z", ...face }),
+          jsx2("path", {
             d: "M20 5 L20 25 M4 33 L20 25 M36 33 L20 25",
             ...edge
           })
         ]
       });
     case "cube":
-      return jsxs("g", {
+      return jsxs2("g", {
         children: [
-          jsx("path", {
+          jsx2("path", {
             d: "M20 4 L33 11 L33 29 L20 36 L7 29 L7 11 Z",
             ...face
           }),
-          jsx("path", { d: "M7 11 L20 18 L33 11 M20 18 L20 36", ...edge })
+          jsx2("path", { d: "M7 11 L20 18 L33 11 M20 18 L20 36", ...edge })
         ]
       });
     case "octahedron":
-      return jsxs("g", {
+      return jsxs2("g", {
         children: [
-          jsx("path", { d: "M20 3 L36 20 L20 37 L4 20 Z", ...face }),
-          jsx("path", { d: "M4 20 L36 20 M20 3 L20 37", ...edge })
+          jsx2("path", { d: "M20 3 L36 20 L20 37 L4 20 Z", ...face }),
+          jsx2("path", { d: "M4 20 L36 20 M20 3 L20 37", ...edge })
         ]
       });
     case "dodecahedron":
-      return jsxs("g", {
+      return jsxs2("g", {
         children: [
-          jsx("path", {
+          jsx2("path", {
             d: "M20 3 L30 6.2 L36.2 14.7 L36.2 25.3 L30 33.8 L20 37 L10 33.8 L3.8 25.3 L3.8 14.7 L10 6.2 Z",
             ...face
           }),
-          jsx("path", {
+          jsx2("path", {
             d: "M20 12 L27.6 17.5 L24.7 26.5 L15.3 26.5 L12.4 17.5 Z M20 12 L20 3 M27.6 17.5 L36.2 14.7 M24.7 26.5 L30 33.8 M15.3 26.5 L10 33.8 M12.4 17.5 L3.8 14.7",
             ...edge
           })
         ]
       });
     case "icosahedron":
-      return jsxs("g", {
+      return jsxs2("g", {
         children: [
-          jsx("path", {
+          jsx2("path", {
             d: "M20 3 L34.7 11.5 L34.7 28.5 L20 37 L5.3 28.5 L5.3 11.5 Z",
             ...face
           }),
-          jsx("path", {
+          jsx2("path", {
             d: "M20 11 L27.8 24.5 L12.2 24.5 Z M20 11 L20 3 M20 11 L34.7 11.5 M20 11 L5.3 11.5 M27.8 24.5 L34.7 11.5 M27.8 24.5 L34.7 28.5 M27.8 24.5 L20 37 M12.2 24.5 L5.3 11.5 M12.2 24.5 L5.3 28.5 M12.2 24.5 L20 37",
             ...edge
           })
@@ -471,7 +867,7 @@ function shapeNode(shape, color, botName = "agent") {
       });
     // ── legacy flat shapes (stored picks from earlier versions) ──
     case "squircle":
-      return jsx("rect", {
+      return jsx2("rect", {
         x: 3,
         y: 3,
         width: 34,
@@ -480,7 +876,7 @@ function shapeNode(shape, color, botName = "agent") {
         fill: color
       });
     case "pill":
-      return jsx("rect", {
+      return jsx2("rect", {
         x: 2,
         y: 7,
         width: 36,
@@ -489,24 +885,24 @@ function shapeNode(shape, color, botName = "agent") {
         fill: color
       });
     case "triangle":
-      return jsx("path", { d: "M20 5.5 L36 33.5 L4 33.5 Z", ...stroke });
+      return jsx2("path", { d: "M20 5.5 L36 33.5 L4 33.5 Z", ...stroke });
     case "hexagon":
-      return jsx("path", {
+      return jsx2("path", {
         d: "M20 3.5 L34.5 11.75 L34.5 28.25 L20 36.5 L5.5 28.25 L5.5 11.75 Z",
         ...stroke
       });
     case "cloud":
-      return jsx("path", {
+      return jsx2("path", {
         d: "M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z",
         fill: color
       });
     case "drop":
-      return jsx("path", {
+      return jsx2("path", {
         d: "M20 3 C20 3 6 20 6 27 a14 13.5 0 0 0 28 0 C34 20 20 3 20 3 Z",
         fill: color
       });
     default:
-      return jsx("circle", { cx: 20, cy: 20, r: 17.5, fill: color });
+      return jsx2("circle", { cx: 20, cy: 20, r: 17.5, fill: color });
   }
 }
 var EYE_Y = {
@@ -540,8 +936,8 @@ function BotFace({
   name = "agent",
   mood = "idle"
 }) {
-  const [blink, setBlink] = useState(false);
-  const [scanX, setScanX] = useState(0);
+  const [blink, setBlink] = useState2(false);
+  const [scanX, setScanX] = useState2(0);
   useEffect(() => {
     if (mood === "work") {
       let dir = 1;
@@ -575,7 +971,7 @@ function BotFace({
     return void 0;
   }, [mood]);
   if (image) {
-    return jsx("img", {
+    return jsx2("img", {
       src: image,
       alt: "",
       "aria-hidden": true,
@@ -592,27 +988,27 @@ function BotFace({
   const eyeY = isSigil ? 14 : EYE_Y[shape] ?? 17;
   const [eyeL, eyeR] = isSigil ? [16, 24] : EYE_X[shape] ?? [15.5, 24.5];
   const eyeFill = isSigil ? color : isDarkColor(color) ? "rgba(232,220,195,0.95)" : "rgba(0,0,0,0.85)";
-  const eyes = mood === "error" ? jsx("path", {
+  const eyes = mood === "error" ? jsx2("path", {
     d: `M${eyeL - 2} ${eyeY - 2} L${eyeL + 2} ${eyeY + 2} M${eyeL + 2} ${eyeY - 2} L${eyeL - 2} ${eyeY + 2} M${eyeR - 2} ${eyeY - 2} L${eyeR + 2} ${eyeY + 2} M${eyeR + 2} ${eyeY - 2} L${eyeR - 2} ${eyeY + 2}`,
     stroke: eyeFill,
     strokeWidth: 1.6,
     strokeLinecap: "round",
     fill: "none"
-  }) : blink ? jsx("path", {
+  }) : blink ? jsx2("path", {
     d: `M${eyeL - 2.2} ${eyeY} L${eyeL + 2.2} ${eyeY} M${eyeR - 2.2} ${eyeY} L${eyeR + 2.2} ${eyeY}`,
     stroke: eyeFill,
     strokeWidth: 1.8,
     strokeLinecap: "round",
     fill: "none"
-  }) : jsxs("g", {
+  }) : jsxs2("g", {
     children: [
-      jsx("circle", {
+      jsx2("circle", {
         cx: eyeL + scanX,
         cy: eyeY,
         r: 2.4,
         fill: eyeFill
       }),
-      jsx("circle", {
+      jsx2("circle", {
         cx: eyeR + scanX,
         cy: eyeY,
         r: 2.4,
@@ -620,7 +1016,7 @@ function BotFace({
       })
     ]
   });
-  return jsxs("svg", {
+  return jsxs2("svg", {
     "data-bot-face": name,
     viewBox: "0 0 40 40",
     width: size,
@@ -631,7 +1027,7 @@ function BotFace({
 }
 async function mcpRpc(method, params) {
   try {
-    const res = await host.request(method, params);
+    const res = await host2.request(method, params);
     return { ok: true, result: res };
   } catch (err) {
     const msg = String(err && err.message || err || "");
@@ -651,10 +1047,10 @@ async function mcpSetupSupported() {
   return _mcpRpcSupported;
 }
 function McpSetupButton({ profile, entry, onDone }) {
-  const [phase, setPhase] = useState("idle");
-  const [supported, setSupported] = useState(null);
-  const [keyValues, setKeyValues] = useState({});
-  const [message, setMessage] = useState("");
+  const [phase, setPhase] = useState2("idle");
+  const [supported, setSupported] = useState2(null);
+  const [keyValues, setKeyValues] = useState2({});
+  const [message, setMessage] = useState2("");
   const pollRef = useRef(null);
   useEffect(() => {
     let alive = true;
@@ -710,7 +1106,7 @@ function McpSetupButton({ profile, entry, onDone }) {
     const t = await mcpRpc("mcp.servers.test", { profile, name: entry.name });
     if (t.ok && t.result && (t.result.ok || t.result.result && t.result.result.ok)) {
       setPhase("done");
-      host.notify({ kind: "success", message: entry.name + " configured" });
+      host2.notify({ kind: "success", message: entry.name + " configured" });
       onDone && onDone();
     } else {
       setPhase("error");
@@ -758,12 +1154,12 @@ function McpSetupButton({ profile, entry, onDone }) {
       return;
     }
     try {
-      if (host.openExternal) {
-        host.openExternal(safeAuthUrl);
+      if (host2.openExternal) {
+        host2.openExternal(safeAuthUrl);
       } else if (typeof window !== "undefined" && window.hermesDesktop && window.hermesDesktop.openExternal) {
         window.hermesDesktop.openExternal(safeAuthUrl);
       } else {
-        host.notify({
+        host2.notify({
           kind: "info",
           message: `Open this URL to authenticate: ${safeAuthUrl}`
         });
@@ -784,7 +1180,7 @@ function McpSetupButton({ profile, entry, onDone }) {
         clearInterval(pollRef.current);
         pollRef.current = null;
         setPhase("done");
-        host.notify({
+        host2.notify({
           kind: "success",
           message: entry.name + " authenticated"
         });
@@ -798,24 +1194,24 @@ function McpSetupButton({ profile, entry, onDone }) {
     }, 2e3);
   };
   if (supported === false) {
-    return jsx("span", {
+    return jsx2("span", {
       className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
       children: "needs setup (" + requires.join(", ") + ") — restart the gateway to enable in-app setup"
     });
   }
   if (phase === "done") {
-    return jsx("span", {
+    return jsx2("span", {
       className: "ml-1.5 text-[0.65rem] text-(--ui-success,#22c55e)",
       children: "set up ✓"
     });
   }
   if (phase === "keys") {
-    return jsxs("div", {
+    return jsxs2("div", {
       className: "mt-1 grid gap-1",
       children: [
         ...requires.map(
-          (k) => jsx(
-            Input,
+          (k) => jsx2(
+            Input2,
             {
               key: k,
               type: "password",
@@ -827,16 +1223,16 @@ function McpSetupButton({ profile, entry, onDone }) {
             k
           )
         ),
-        jsxs("div", {
+        jsxs2("div", {
           className: "flex gap-1",
           children: [
-            jsx(Button, {
+            jsx2(Button2, {
               size: "xs",
               variant: "secondary",
               onClick: () => void submitKeys(),
               children: "Save & test"
             }),
-            jsx(Button, {
+            jsx2(Button2, {
               size: "xs",
               variant: "ghost",
               onClick: () => setPhase("idle"),
@@ -848,23 +1244,23 @@ function McpSetupButton({ profile, entry, onDone }) {
     });
   }
   if (phase === "oauth") {
-    return jsx("span", {
+    return jsx2("span", {
       className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
       children: message || "Authorizing…"
     });
   }
   if (phase === "busy") {
-    return jsx("span", {
+    return jsx2("span", {
       className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
       children: "Working…"
     });
   }
   if (phase === "error") {
-    return jsxs("span", {
+    return jsxs2("span", {
       className: "ml-1.5 text-[0.65rem] text-(--ui-danger,#ef4444)",
       children: [
         (message || "Setup failed") + " ",
-        jsx("button", {
+        jsx2("button", {
           className: "underline",
           onClick: () => setPhase("idle"),
           children: "retry"
@@ -872,7 +1268,7 @@ function McpSetupButton({ profile, entry, onDone }) {
       ]
     });
   }
-  return jsx("button", {
+  return jsx2("button", {
     className: "ml-1.5 text-[0.65rem] text-(--ui-accent,#4f9cf9) underline",
     onClick: () => void (isOAuth ? beginOAuth() : beginKeys()),
     children: isOAuth ? "Sign in…" : "Set up…"
@@ -931,7 +1327,7 @@ function pickImageFromDevice() {
         return resolve(null);
       }
       if (file.size > 15e6) {
-        host.notify({ kind: "error", message: "Image too large (max 15MB)." });
+        host2.notify({ kind: "error", message: "Image too large (max 15MB)." });
         return resolve(null);
       }
       const reader = new FileReader();
@@ -942,20 +1338,20 @@ function pickImageFromDevice() {
     input.click();
   });
 }
-var $imagenAvailable = atom(null);
+var $imagenAvailable = atom2(null);
 var imagenProbeInflight = null;
 function probeImagen() {
   if (imagenProbeInflight) {
     return imagenProbeInflight;
   }
-  imagenProbeInflight = host.request("image.generate", { probe: true }).then((res) => $imagenAvailable.set(Boolean(res?.available))).catch(() => $imagenAvailable.set(false)).finally(() => {
+  imagenProbeInflight = host2.request("image.generate", { probe: true }).then((res) => $imagenAvailable.set(Boolean(res?.available))).catch(() => $imagenAvailable.set(false)).finally(() => {
     imagenProbeInflight = null;
   });
   return imagenProbeInflight;
 }
 async function generateAvatarImage(bot, title, description) {
   const who = [title || bot, description].filter(Boolean).join(" — ");
-  const res = await host.request("image.generate", {
+  const res = await host2.request("image.generate", {
     prompt: `Cute minimal robot avatar for an AI agent named "${who}". Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.`,
     aspect_ratio: "square"
   });
@@ -974,10 +1370,10 @@ function AvatarPicker({
   generateSeed
 }) {
   const pickerName = generateSeed?.name || "agent";
-  const imagen = useValue($imagenAvailable);
-  const [tab, setTab] = useState("bot");
-  const [describe, setDescribe] = useState("");
-  const [genBusy, setGenBusy] = useState(false);
+  const imagen = useValue2($imagenAvailable);
+  const [tab, setTab] = useState2("bot");
+  const [describe, setDescribe] = useState2("");
+  const [genBusy, setGenBusy] = useState2(false);
   useEffect(() => {
     if (imagen === null) void probeImagen();
   }, [imagen]);
@@ -1002,7 +1398,7 @@ function AvatarPicker({
     try {
       const custom = describe.trim();
       const img = custom ? await (async () => {
-        const res = await host.request("image.generate", {
+        const res = await host2.request("image.generate", {
           prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
           aspect_ratio: "square"
         });
@@ -1019,12 +1415,12 @@ function AvatarPicker({
         onImage(await normalizeAvatarImage(img));
       }
     } catch (err) {
-      host.notifyError(err, "Avatar generation failed");
+      host2.notifyError(err, "Avatar generation failed");
     } finally {
       setGenBusy(false);
     }
   };
-  const tabButton = (id, label) => jsx(
+  const tabButton = (id, label) => jsx2(
     "button",
     {
       type: "button",
@@ -1037,11 +1433,11 @@ function AvatarPicker({
     },
     id
   );
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid justify-items-center gap-3",
     children: [
       // Tab pills: Bot | Generate | Upload | Pet
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-center gap-1",
         children: [
           tabButton("bot", "Bot"),
@@ -1050,17 +1446,17 @@ function AvatarPicker({
           tabButton("pet", "Pet")
         ]
       }),
-      image && tab !== "generate" ? jsx(Button, {
+      image && tab !== "generate" ? jsx2(Button2, {
         type: "button",
         variant: "ghost",
         size: "sm",
         onClick: () => onImage(null),
         children: "Remove image — use shape"
       }) : null,
-      tab === "bot" ? jsxs("div", {
+      tab === "bot" ? jsxs2("div", {
         className: "grid justify-items-center gap-3",
         children: [
-          jsx("div", {
+          jsx2("div", {
             style: {
               display: "grid",
               gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
@@ -1068,7 +1464,7 @@ function AvatarPicker({
               justifyItems: "center"
             },
             children: AVATAR_SHAPES.map(
-              (s) => jsx(
+              (s) => jsx2(
                 "button",
                 {
                   type: "button",
@@ -1081,7 +1477,7 @@ function AvatarPicker({
                     onImage(null);
                     onShape(s);
                   },
-                  children: jsx(BotFace, {
+                  children: jsx2(BotFace, {
                     shape: s,
                     color,
                     size: 32,
@@ -1092,7 +1488,7 @@ function AvatarPicker({
               )
             )
           }),
-          jsx("div", {
+          jsx2("div", {
             style: {
               display: "grid",
               gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
@@ -1100,7 +1496,7 @@ function AvatarPicker({
               justifyItems: "center"
             },
             children: AVATAR_COLORS.map(
-              (c) => jsx(
+              (c) => jsx2(
                 "button",
                 {
                   type: "button",
@@ -1117,55 +1513,55 @@ function AvatarPicker({
           })
         ]
       }) : null,
-      tab === "generate" ? imagen ? jsxs("div", {
+      tab === "generate" ? imagen ? jsxs2("div", {
         className: "grid w-full gap-2",
         children: [
-          jsx(Textarea, {
+          jsx2(Textarea2, {
             className: "min-h-16 text-xs",
             placeholder: "Describe your avatar…",
             value: describe,
             onChange: (event) => setDescribe(event.target.value)
           }),
-          jsxs(Button, {
+          jsxs2(Button2, {
             type: "button",
             variant: "secondary",
             className: "w-full justify-center",
             disabled: genBusy,
             onClick: generate,
             children: [
-              genBusy ? jsx(GlyphSpinner, {
+              genBusy ? jsx2(GlyphSpinner, {
                 spinner: "breathe",
                 className: "mr-1 text-[0.8rem]"
-              }) : jsx(Codicon, {
+              }) : jsx2(Codicon2, {
                 name: "sparkle",
                 className: "mr-1 text-[0.8rem]"
               }),
               genBusy ? "Generating…" : "Generate"
             ]
           }),
-          describe.trim() ? null : jsx("div", {
+          describe.trim() ? null : jsx2("div", {
             className: "text-center text-[0.65rem] text-(--ui-text-quaternary)",
             children: "Leave blank to generate from the agent’s name and description."
           })
         ]
-      }) : jsx("div", {
+      }) : jsx2("div", {
         className: "px-2 py-3 text-center text-xs leading-5 text-(--ui-text-tertiary)",
         children: imagen === false ? 'No image model available. If you just enabled one (or updated Hermes), restart the gateway: Ctrl+K → "Restart gateway".' : "Checking image backend…"
       }) : null,
-      tab === "upload" ? jsxs(Button, {
+      tab === "upload" ? jsxs2(Button2, {
         type: "button",
         variant: "secondary",
         className: "w-full justify-center",
         onClick: upload,
         children: [
-          jsx(Codicon, {
+          jsx2(Codicon2, {
             name: "device-camera",
             className: "mr-1 text-[0.8rem]"
           }),
           "Choose an image…"
         ]
       }) : null,
-      tab === "pet" ? jsx(PetTab, { image, onImage }) : null
+      tab === "pet" ? jsx2(PetTab, { image, onImage }) : null
     ]
   });
 }
@@ -1220,7 +1616,7 @@ function petFrameIcon(spriteUrl) {
   return petFrameCache.get(spriteUrl);
 }
 function PetThumb({ spriteUrl, size = 40 }) {
-  const [icon, setIcon] = useState(null);
+  const [icon, setIcon] = useState2(null);
   useEffect(() => {
     let alive = true;
     petFrameIcon(spriteUrl).then((url) => {
@@ -1233,7 +1629,7 @@ function PetThumb({ spriteUrl, size = 40 }) {
     };
   }, [spriteUrl]);
   if (!icon) {
-    return jsx("div", {
+    return jsx2("div", {
       style: {
         width: size,
         height: size,
@@ -1242,7 +1638,7 @@ function PetThumb({ spriteUrl, size = 40 }) {
       }
     });
   }
-  return jsx("img", {
+  return jsx2("img", {
     src: icon,
     alt: "",
     style: {
@@ -1255,26 +1651,26 @@ function PetThumb({ spriteUrl, size = 40 }) {
   });
 }
 function PetTab({ image, onImage }) {
-  const [selectedSlug, setSelectedSlug] = useState(null);
+  const [selectedSlug, setSelectedSlug] = useState2(null);
   const { data, isLoading } = useQuery({
     queryKey: [ID, "pet-gallery"],
-    queryFn: () => host.request("pet.gallery", {}),
+    queryFn: () => host2.request("pet.gallery", {}),
     staleTime: 3e5
   });
-  const [query, setQuery] = useState("");
-  const [limit, setLimit] = useState(24);
+  const [query, setQuery] = useState2("");
+  const [limit, setLimit] = useState2(24);
   const pets = data?.pets ?? [];
   if (isLoading) {
-    return jsx("div", {
+    return jsx2("div", {
       className: "flex justify-center py-4",
-      children: jsx(GlyphSpinner, {
+      children: jsx2(GlyphSpinner, {
         spinner: "breathe",
         className: "text-(--ui-text-tertiary)"
       })
     });
   }
   if (!pets.length) {
-    return jsx("div", {
+    return jsx2("div", {
       className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
       children: "No pets in the petdex gallery. Run `hermes pets` to explore."
     });
@@ -1294,14 +1690,14 @@ function PetTab({ image, onImage }) {
       setLimit((prev) => Math.min(prev + 24, ranked.length));
     }
   };
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid w-full gap-2",
     children: [
-      jsx("div", {
+      jsx2("div", {
         className: "text-center text-[0.65rem] text-(--ui-text-quaternary)",
         children: "Pick a pet as this agent’s profile picture."
       }),
-      jsx(Input, {
+      jsx2(Input2, {
         className: "h-7 text-xs",
         placeholder: `Search ${pets.length} pets…`,
         value: query,
@@ -1310,7 +1706,7 @@ function PetTab({ image, onImage }) {
           setLimit(24);
         }
       }),
-      image && selectedSlug ? jsx(Button, {
+      image && selectedSlug ? jsx2(Button2, {
         type: "button",
         variant: "ghost",
         size: "sm",
@@ -1321,21 +1717,21 @@ function PetTab({ image, onImage }) {
         },
         children: "Remove — back to shape avatar"
       }) : null,
-      filtered.length === 0 ? jsx("div", {
+      filtered.length === 0 ? jsx2("div", {
         className: "py-3 text-center text-xs text-(--ui-text-quaternary)",
         children: "No pets match."
-      }) : jsxs("div", {
+      }) : jsxs2("div", {
         onScroll,
         style: { maxHeight: 220, overflowY: "auto" },
         children: [
-          jsx("div", {
+          jsx2("div", {
             style: {
               display: "grid",
               gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
               gap: "6px"
             },
             children: visible.map(
-              (pet) => jsxs(
+              (pet) => jsxs2(
                 "button",
                 {
                   type: "button",
@@ -1350,7 +1746,7 @@ function PetTab({ image, onImage }) {
                         onImage(icon);
                       } else {
                         setSelectedSlug(null);
-                        host.notify({
+                        host2.notify({
                           kind: "error",
                           message: "Could not load that pet — try another."
                         });
@@ -1358,11 +1754,11 @@ function PetTab({ image, onImage }) {
                     });
                   },
                   children: [
-                    jsx(PetThumb, {
+                    jsx2(PetThumb, {
                       spriteUrl: pet.spritesheetUrl,
                       size: 40
                     }),
-                    jsx("span", {
+                    jsx2("span", {
                       className: "w-full truncate text-center text-[0.6rem] text-(--ui-text-tertiary)",
                       children: pet.displayName
                     })
@@ -1372,7 +1768,7 @@ function PetTab({ image, onImage }) {
               )
             )
           }),
-          limit < ranked.length ? jsx("div", {
+          limit < ranked.length ? jsx2("div", {
             className: "py-2 text-center text-[0.65rem] text-(--ui-text-quaternary)",
             children: `Scroll for more (${limit} of ${ranked.length})`
           }) : null
@@ -1384,7 +1780,7 @@ function PetTab({ image, onImage }) {
 function useRoster() {
   return useQuery({
     queryKey: ROSTER_KEY,
-    queryFn: () => host.request("profiles.list", {}),
+    queryFn: () => host2.request("profiles.list", {}),
     refetchInterval: 5e3,
     staleTime: 5e3,
     // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
@@ -1409,7 +1805,7 @@ function createCanonicalChat(name) {
     return inflight;
   }
   const run = (async () => {
-    const res = await host.request("session.create", {
+    const res = await host2.request("session.create", {
       profile: name,
       title: "Bot Chat"
     });
@@ -1418,15 +1814,15 @@ function createCanonicalChat(name) {
     if (sid) {
       saveBotMeta(name, { chat: sid });
     }
-    if (sid && typeof host.openSession === "function") {
+    if (sid && typeof host2.openSession === "function") {
       try {
-        await host.openSession(sid, { profile: name });
+        await host2.openSession(sid, { profile: name });
       } catch {
       }
     }
     if (runtime) {
       window.setTimeout(() => {
-        void host.request("prompt.submit", {
+        void host2.request("prompt.submit", {
           session_id: runtime,
           text: "Hey, tell me about yourself!"
         }).catch(() => void 0);
@@ -1452,7 +1848,7 @@ function slugify(value) {
 }
 function messagingProtocolSection(name, roster) {
   const teammates = (roster || []).filter((b) => b.name !== name);
-  const safeName = NAME_RE.test(name) ? name : "agent";
+  const safeName = NAME_RE2.test(name) ? name : "agent";
   const examplePrefix = `Message from 🤖 ${safeName} (@${safeName}): `;
   return [
     "## Messaging other agents",
@@ -1463,7 +1859,7 @@ function messagingProtocolSection(name, roster) {
     "into it, like a DM. To message a teammate, run:",
     "",
     "```",
-    `hermes -p <agent-name> chat --in ~ -c 'Bot Chat' -Q -q ${shellQuote(examplePrefix + "your message")}`,
+    `hermes -p <agent-name> chat --in ~ -c 'Bot Chat' -Q -q ${shellQuote2(examplePrefix + "your message")}`,
     "",
     "Run the send with background=true and notify_on_complete=true on the",
     "terminal tool, then finish your turn — the reply arrives later as a",
@@ -1511,14 +1907,14 @@ function composeSoul({ name, title, description, roster, customSoul }) {
   return lines.filter((line) => line !== null).join("\n") + "\n\n" + messagingProtocolSection(name, roster);
 }
 function BotRow({ bot, onEdit }) {
-  const activeProfile = useValue(host.state.profile);
-  const meta = useValue($botMeta)[bot.name];
+  const activeProfile = useValue2(host2.state.profile);
+  const meta = useValue2($botMeta)[bot.name];
   const last = bot.last_session;
   const isActive = bot.name === activeProfile;
   const { shape, color, image } = botAppearance(bot.name, meta);
-  const gatewayState = useValue(host.state.gateway);
+  const gatewayState = useValue2(host2.state.gateway);
   const botMood = isActive && gatewayState === "busy" ? "work" : "idle";
-  const unread = Boolean(useValue($botUnread)[bot.name]);
+  const unread = Boolean(useValue2($botUnread)[bot.name]);
   const open = async () => {
     haptic("tap");
     $selectedBot.set(bot.name);
@@ -1530,7 +1926,7 @@ function BotRow({ bot, onEdit }) {
     let id = meta?.chat || meta?.chat_pin || null;
     if (id) {
       try {
-        const res = await host.request("session.list", {
+        const res = await host2.request("session.list", {
           profile: bot.name,
           limit: 100
         });
@@ -1549,15 +1945,15 @@ function BotRow({ bot, onEdit }) {
         id = null;
       }
     }
-    if (id && typeof host.openSession === "function") {
-      void host.openSession(id, { profile: bot.name });
-    } else if (typeof host.newChat === "function") {
-      host.newChat(bot.name);
+    if (id && typeof host2.openSession === "function") {
+      void host2.openSession(id, { profile: bot.name });
+    } else if (typeof host2.newChat === "function") {
+      host2.newChat(bot.name);
     } else {
-      host.navigate("/");
+      host2.navigate("/");
     }
   };
-  const row = jsxs("button", {
+  const row = jsxs2("button", {
     type: "button",
     onClick: open,
     className: cn(
@@ -1566,9 +1962,9 @@ function BotRow({ bot, onEdit }) {
       isActive && "bg-(--chrome-action-hover)"
     ),
     children: [
-      jsx("div", {
+      jsx2("div", {
         className: "shrink-0",
-        children: jsx(BotFace, {
+        children: jsx2(BotFace, {
           shape,
           color,
           image,
@@ -1577,41 +1973,41 @@ function BotRow({ bot, onEdit }) {
           mood: botMood
         })
       }),
-      jsxs("div", {
+      jsxs2("div", {
         className: "min-w-0 flex-1",
         children: [
-          jsxs("div", {
+          jsxs2("div", {
             className: "flex items-baseline justify-between gap-2",
             children: [
-              jsxs("div", {
+              jsxs2("div", {
                 className: "flex min-w-0 items-baseline gap-1.5 truncate",
                 children: [
-                  meta?.pinned ? jsx("span", {
+                  meta?.pinned ? jsx2("span", {
                     className: "shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)",
                     title: "Pinned",
                     children: "📌"
                   }) : null,
-                  jsx("span", {
+                  jsx2("span", {
                     className: "truncate text-[0.8125rem] font-medium",
                     children: displayName(bot, meta)
                   }),
-                  showsHandle(bot.name, meta) ? jsx("span", {
+                  showsHandle(bot.name, meta) ? jsx2("span", {
                     className: "shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)",
                     children: `@${botHandle(bot.name)}`
                   }) : null
                 ]
               }),
-              unread ? jsx("span", {
+              unread ? jsx2("span", {
                 className: "size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)",
                 "aria-label": "unread"
               }) : null,
-              last ? jsx("span", {
+              last ? jsx2("span", {
                 className: "shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)",
                 children: relativeTime(last.last_active * 1e3)
               }) : null
             ]
           }),
-          jsx("div", {
+          jsx2("div", {
             className: "truncate text-xs text-(--ui-text-tertiary)",
             children: last?.preview || bot.description || "No conversations yet — say hi"
           })
@@ -1619,49 +2015,49 @@ function BotRow({ bot, onEdit }) {
       })
     ]
   });
-  return jsxs(ContextMenu, {
+  return jsxs2(ContextMenu, {
     children: [
-      jsx(ContextMenuTrigger, { asChild: true, children: row }),
-      jsxs(ContextMenuContent, {
+      jsx2(ContextMenuTrigger, { asChild: true, children: row }),
+      jsxs2(ContextMenuContent, {
         children: [
-          jsx(ContextMenuItem, {
+          jsx2(ContextMenuItem, {
             onSelect: () => {
               const pinned = Boolean($botMeta.get()[bot.name]?.pinned);
               saveBotMeta(bot.name, { pinned: !pinned });
-              host.notify({
+              host2.notify({
                 kind: "info",
                 message: `${displayName(bot, meta)} ${pinned ? "unpinned" : "pinned to top"}`
               });
             },
             children: meta?.pinned ? "Unpin" : "Pin to top"
           }),
-          jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, {
+          jsx2(ContextMenuSeparator, {}),
+          jsx2(ContextMenuItem, {
             onSelect: () => onEdit(bot),
             children: "Edit Profile"
           }),
-          jsx(ContextMenuItem, {
+          jsx2(ContextMenuItem, {
             onSelect: () => {
-              host.notify({
+              host2.notify({
                 kind: "info",
                 message: `Duplicating ${displayName(bot, meta)}…`
               });
               duplicateBot(bot, $lastRoster.get()).then((name) => {
                 queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
-                host.notify({
+                host2.notify({
                   kind: "success",
                   message: `Created ${name} — full copy of ${bot.name}`
                 });
-              }).catch((err) => host.notifyError(err, "Duplicate failed"));
+              }).catch((err) => host2.notifyError(err, "Duplicate failed"));
             },
             children: "Duplicate"
           }),
-          jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, {
+          jsx2(ContextMenuSeparator, {}),
+          jsx2(ContextMenuItem, {
             onSelect: () => {
               $selectedBot.set(bot.name);
-              if (typeof host.newChat === "function") {
-                host.newChat(bot.name);
+              if (typeof host2.newChat === "function") {
+                host2.newChat(bot.name);
               }
             },
             children: "New chat with this agent"
@@ -1674,7 +2070,7 @@ function BotRow({ bot, onEdit }) {
 function useModelOptions() {
   return useQuery({
     queryKey: [ID, "model-options"],
-    queryFn: () => host.request("model.options", {}),
+    queryFn: () => host2.request("model.options", {}),
     staleTime: 12e4,
     retry: false
   });
@@ -1686,9 +2082,9 @@ function ModelPicker({
 }) {
   const { data, isLoading, error } = useModelOptions();
   if (isLoading) {
-    return jsx("div", {
+    return jsx2("div", {
       className: "flex justify-center py-2",
-      children: jsx(GlyphSpinner, {
+      children: jsx2(GlyphSpinner, {
         spinner: "breathe",
         className: "text-(--ui-text-tertiary)"
       })
@@ -1698,12 +2094,12 @@ function ModelPicker({
     (p) => (p.models || []).length
   );
   if (error || !providers.length) {
-    return jsxs("div", {
+    return jsxs2("div", {
       style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" },
       children: [
         labeled(
           "Provider",
-          jsx(Input, {
+          jsx2(Input2, {
             placeholder: "nous / openrouter …",
             value: value.provider,
             onChange: (event) => onChange({ provider: event.target.value })
@@ -1711,7 +2107,7 @@ function ModelPicker({
         ),
         labeled(
           "Model",
-          jsx(Input, {
+          jsx2(Input2, {
             placeholder: "anthropic/claude-fable-5",
             value: value.model,
             onChange: (event) => onChange({ model: event.target.value })
@@ -1725,12 +2121,12 @@ function ModelPicker({
   const models = activeProvider ? (activeProvider.models || []).map(
     (m) => typeof m === "string" ? m : m.id
   ) : [];
-  return jsxs("div", {
+  return jsxs2("div", {
     style: { display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: "10px" },
     children: [
       labeled(
         "Provider",
-        jsxs(Select, {
+        jsxs2(Select, {
           value: value.provider || NONE,
           onValueChange: (v) => {
             if (v === NONE) {
@@ -1749,18 +2145,18 @@ function ModelPicker({
             }
           },
           children: [
-            jsx(SelectTrigger, {
+            jsx2(SelectTrigger, {
               className: "h-8 rounded-md",
-              children: jsx(SelectValue, {})
+              children: jsx2(SelectValue, {})
             }),
-            jsxs(SelectContent, {
+            jsxs2(SelectContent, {
               children: [
-                jsx(SelectItem, {
+                jsx2(SelectItem, {
                   value: NONE,
                   children: "Inherit (launch profile)"
                 }),
                 ...providers.map(
-                  (p) => jsx(SelectItem, { value: p.slug, children: p.slug }, p.slug)
+                  (p) => jsx2(SelectItem, { value: p.slug, children: p.slug }, p.slug)
                 )
               ]
             })
@@ -1769,21 +2165,21 @@ function ModelPicker({
       ),
       labeled(
         "Model",
-        activeProvider ? jsxs(Select, {
+        activeProvider ? jsxs2(Select, {
           value: value.model || (models[0] ?? ""),
           onValueChange: (v) => onChange({ model: v }),
           children: [
-            jsx(SelectTrigger, {
+            jsx2(SelectTrigger, {
               className: "h-8 rounded-md",
-              children: jsx(SelectValue, {})
+              children: jsx2(SelectValue, {})
             }),
-            jsx(SelectContent, {
+            jsx2(SelectContent, {
               children: models.map(
-                (m) => jsx(SelectItem, { value: m, children: m }, m)
+                (m) => jsx2(SelectItem, { value: m, children: m }, m)
               )
             })
           ]
-        }) : jsx(Input, {
+        }) : jsx2(Input2, {
           disabled: true,
           placeholder: placeholderModel,
           value: "",
@@ -1794,25 +2190,25 @@ function ModelPicker({
   });
 }
 function CheckList({ items, onToggle, columns = 2 }) {
-  return jsx("div", {
+  return jsx2("div", {
     style: {
       display: "grid",
       gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
       gap: "2px 12px"
     },
     children: items.map(
-      (item) => jsxs(
+      (item) => jsxs2(
         "label",
         {
           className: "flex min-w-0 cursor-pointer items-center gap-1.5 py-0.5 text-xs text-(--ui-text-secondary)",
           title: item.description || item.name,
           children: [
-            jsx(Checkbox, {
+            jsx2(Checkbox, {
               checked: item.enabled,
               onCheckedChange: (value) => onToggle(item.name, Boolean(value))
             }),
-            jsx("span", { className: "truncate", children: item.name }),
-            item.tool_count ? jsx("span", {
+            jsx2("span", { className: "truncate", children: item.name }),
+            item.tool_count ? jsx2("span", {
               className: "shrink-0 text-[0.6rem] text-(--ui-text-quaternary)",
               children: `${item.tool_count}`
             }) : null
@@ -1824,13 +2220,13 @@ function CheckList({ items, onToggle, columns = 2 }) {
   });
 }
 function AdvancedProfileConfig({ bot, state, setState }) {
-  const [unsupported, setUnsupported] = useState(false);
-  const [skillFilter, setSkillFilter] = useState("");
+  const [unsupported, setUnsupported] = useState2(false);
+  const [skillFilter, setSkillFilter] = useState2("");
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      host.request("profiles.describe", { name: bot }),
-      host.request("mcp.catalog", { profile: bot }).catch(() => null)
+      host2.request("profiles.describe", { name: bot }),
+      host2.request("mcp.catalog", { profile: bot }).catch(() => null)
     ]).then(([res, cat]) => {
       if (cancelled) return;
       const configured = res.mcp_servers || [];
@@ -1867,15 +2263,15 @@ function AdvancedProfileConfig({ bot, state, setState }) {
     };
   }, [bot]);
   if (unsupported) {
-    return jsx("div", {
+    return jsx2("div", {
       className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
       children: "Full configuration needs a newer gateway (restart it after updating Hermes)."
     });
   }
   if (!state.loaded) {
-    return jsx("div", {
+    return jsx2("div", {
       className: "flex justify-center py-4",
-      children: jsx(GlyphSpinner, {
+      children: jsx2(GlyphSpinner, {
         spinner: "breathe",
         className: "text-(--ui-text-tertiary)"
       })
@@ -1907,33 +2303,33 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const enabledToolsets = state.toolsets.filter((t) => t.enabled).length;
   const mcpList = state.mcp || [];
   const enabledMcp = mcpList.filter((m) => m.enabled).length;
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid gap-4",
     children: [
-      jsx(ModelPicker, {
+      jsx2(ModelPicker, {
         value: { provider: state.provider, model: state.model },
         onChange: (patch) => setState((prev) => ({ ...prev, dirtyModel: true, ...patch }))
       }),
       labeled(
         `Skills (${enabledSkills}/${state.skills.length} enabled)`,
-        jsxs("div", {
+        jsxs2("div", {
           className: "grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2",
           children: [
-            jsx(Input, {
+            jsx2(Input2, {
               className: "h-7 text-xs",
               placeholder: "Filter skills…",
               value: skillFilter,
               onChange: (event) => setSkillFilter(event.target.value)
             }),
-            jsx(ScrollArea, {
+            jsx2(ScrollArea2, {
               style: { maxHeight: 180 },
-              children: jsx(CheckList, {
+              children: jsx2(CheckList, {
                 items: visibleSkills,
                 onToggle: toggleSkill,
                 columns: 2
               })
             }),
-            jsx(HubSkillsSection, {
+            jsx2(HubSkillsSection, {
               forProfile: bot,
               onInstalled: (name) => setState(
                 (prev) => prev.skills.some((s) => s.name === name) ? prev : {
@@ -1947,11 +2343,11 @@ function AdvancedProfileConfig({ bot, state, setState }) {
       ),
       labeled(
         `Toolsets (${enabledToolsets}/${state.toolsets.length} enabled — unchecking all restores the default)`,
-        jsx("div", {
+        jsx2("div", {
           className: "rounded-md border border-(--ui-stroke-secondary) p-2",
-          children: jsx(ScrollArea, {
+          children: jsx2(ScrollArea2, {
             style: { maxHeight: 160 },
-            children: jsx(CheckList, {
+            children: jsx2(CheckList, {
               items: state.toolsets,
               onToggle: toggleToolset,
               columns: 2
@@ -1961,41 +2357,41 @@ function AdvancedProfileConfig({ bot, state, setState }) {
       ),
       labeled(
         `MCP servers (${enabledMcp}/${mcpList.length} enabled)`,
-        jsx("div", {
+        jsx2("div", {
           className: "rounded-md border border-(--ui-stroke-secondary) p-2",
-          children: mcpList.length === 0 ? jsx("div", {
+          children: mcpList.length === 0 ? jsx2("div", {
             className: "px-1 py-2 text-center text-xs text-(--ui-text-tertiary)",
             children: "No MCP servers configured or in the catalog."
-          }) : jsx(ScrollArea, {
+          }) : jsx2(ScrollArea2, {
             style: { maxHeight: 180 },
-            children: jsx("div", {
+            children: jsx2("div", {
               className: "grid gap-1",
               children: mcpList.map((m) => {
                 const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || "").toLowerCase() === "oauth");
-                return jsxs(
+                return jsxs2(
                   "label",
                   {
                     className: "flex items-start gap-2 text-xs text-(--ui-text-secondary)",
                     children: [
-                      jsx(Checkbox, {
+                      jsx2(Checkbox, {
                         checked: !!m.enabled,
                         disabled: needsSetup,
                         onCheckedChange: (value) => toggleMcp(m.name, Boolean(value))
                       }),
-                      jsxs("span", {
+                      jsxs2("span", {
                         className: "min-w-0",
                         children: [
-                          jsx("span", { children: m.name }),
-                          m.fromCatalog && !needsSetup ? jsx("span", {
+                          jsx2("span", { children: m.name }),
+                          m.fromCatalog && !needsSetup ? jsx2("span", {
                             className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
                             children: m.installed ? "catalog · installed" : "catalog"
                           }) : null,
-                          needsSetup ? jsx(McpSetupButton, {
+                          needsSetup ? jsx2(McpSetupButton, {
                             profile: bot,
                             entry: m,
                             onDone: () => toggleMcp(m.name, true)
                           }) : null,
-                          m.description ? jsx("div", {
+                          m.description ? jsx2("div", {
                             className: "truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                             children: m.description
                           }) : null
@@ -2012,7 +2408,7 @@ function AdvancedProfileConfig({ bot, state, setState }) {
       ),
       labeled(
         "SOUL.md (persona + agent-messaging protocol)",
-        jsx(Textarea, {
+        jsx2(Textarea2, {
           className: "min-h-28 font-mono text-xs leading-5",
           value: state.soul,
           onChange: (event) => setState((prev) => ({
@@ -2028,12 +2424,12 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 var HUB_ORIGIN = "https://hermes-agent.nousresearch.com";
 var HUB_PICKER_URL = HUB_ORIGIN + "/docs/skills?embed=picker";
 function HubSkillsSection({ forProfile, onInstalled }) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState(null);
-  const [searching, setSearching] = useState(false);
-  const [installing, setInstalling] = useState(null);
-  const [installed, setInstalled] = useState({});
-  const [browseHub, setBrowseHub] = useState(false);
+  const [query, setQuery] = useState2("");
+  const [results, setResults] = useState2(null);
+  const [searching, setSearching] = useState2(false);
+  const [installing, setInstalling] = useState2(null);
+  const [installed, setInstalled] = useState2({});
+  const [browseHub, setBrowseHub] = useState2(false);
   const installRef = useRef(null);
   useEffect(() => {
     if (!browseHub) {
@@ -2067,7 +2463,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
     setSearching(true);
     setResults(null);
     try {
-      const res = await host.request("skills.manage", {
+      const res = await host2.request("skills.manage", {
         action: "search",
         query: q
       });
@@ -2085,34 +2481,34 @@ function HubSkillsSection({ forProfile, onInstalled }) {
     }
     setInstalling(label);
     try {
-      await host.request("skills.manage", {
+      await host2.request("skills.manage", {
         action: "install",
         query: name,
         ...forProfile ? { profile: forProfile } : {}
       });
       setInstalled((prev) => ({ ...prev, [label]: true }));
-      host.notify({ kind: "success", message: `Skill "${label}" installed` });
+      host2.notify({ kind: "success", message: `Skill "${label}" installed` });
       if (typeof onInstalled === "function") {
         onInstalled(label);
       }
     } catch (err) {
-      host.notifyError(err, `Installing "${label}" failed`);
+      host2.notifyError(err, `Installing "${label}" failed`);
     } finally {
       setInstalling(null);
     }
   };
   installRef.current = install;
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2",
     children: [
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-baseline justify-between gap-2",
         children: [
-          jsx("div", {
+          jsx2("div", {
             className: "text-[0.7rem] font-medium text-(--ui-text-secondary)",
             children: "Skills Hub"
           }),
-          jsx("button", {
+          jsx2("button", {
             type: "button",
             className: "text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)",
             onClick: () => setBrowseHub((v) => !v),
@@ -2120,7 +2516,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
           })
         ]
       }),
-      browseHub ? jsxs("div", {
+      browseHub ? jsxs2("div", {
         className: "grid gap-1",
         children: [
           // Resizable viewport: native CSS resize handle (bottom-right
@@ -2128,7 +2524,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
           // inside is rendered oversized and scaled DOWN (133% × 0.75)
           // so the hub page starts zoomed out — we can't style the
           // cross-origin page itself, but scaling the frame is ours.
-          jsx("div", {
+          jsx2("div", {
             style: {
               width: "100%",
               height: 560,
@@ -2141,7 +2537,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
               borderRadius: 8,
               position: "relative"
             },
-            children: jsx("iframe", {
+            children: jsx2("iframe", {
               src: HUB_PICKER_URL,
               title: "Hermes Skills Hub",
               style: {
@@ -2155,16 +2551,16 @@ function HubSkillsSection({ forProfile, onInstalled }) {
               sandbox: "allow-scripts allow-same-origin"
             })
           }),
-          jsx("div", {
+          jsx2("div", {
             className: "px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
             children: installing ? `Installing "${installing}"…` : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'
           })
         ]
       }) : null,
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex gap-1.5",
         children: [
-          jsx(Input, {
+          jsx2(Input2, {
             className: "h-7 flex-1 text-xs",
             placeholder: "Search the hub (community + well-known sources)…",
             value: query,
@@ -2176,7 +2572,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
               }
             }
           }),
-          jsx(Button, {
+          jsx2(Button2, {
             size: "sm",
             variant: "secondary",
             disabled: searching || !query.trim(),
@@ -2185,40 +2581,40 @@ function HubSkillsSection({ forProfile, onInstalled }) {
           })
         ]
       }),
-      searching ? jsx("div", {
+      searching ? jsx2("div", {
         className: "px-1 text-[0.65rem] text-(--ui-text-quaternary)",
         children: "Searching community + well-known sources — can take ~10s…"
       }) : null,
-      results === null ? null : results.length === 0 ? jsx("div", {
+      results === null ? null : results.length === 0 ? jsx2("div", {
         className: "px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)",
         children: "No hub skills matched."
-      }) : jsx(ScrollArea, {
+      }) : jsx2(ScrollArea2, {
         style: { maxHeight: 150 },
-        children: jsx("div", {
+        children: jsx2("div", {
           className: "grid gap-1",
           children: results.map(
-            (r) => jsxs(
+            (r) => jsxs2(
               "div",
               {
                 className: "flex items-center gap-2 text-xs",
                 children: [
-                  jsxs("div", {
+                  jsxs2("div", {
                     className: "min-w-0 flex-1",
                     children: [
-                      jsx("div", {
+                      jsx2("div", {
                         className: "truncate font-medium",
                         children: r.name
                       }),
-                      r.description ? jsx("div", {
+                      r.description ? jsx2("div", {
                         className: "truncate text-[0.65rem] text-(--ui-text-quaternary)",
                         children: r.description
                       }) : null
                     ]
                   }),
-                  installed[r.name] ? jsx("span", {
+                  installed[r.name] ? jsx2("span", {
                     className: "shrink-0 text-[0.65rem] text-(--ui-text-tertiary)",
                     children: "✓ added"
-                  }) : jsx(Button, {
+                  }) : jsx2(Button2, {
                     size: "sm",
                     variant: "ghost",
                     className: "shrink-0 px-2 font-semibold",
@@ -2276,13 +2672,13 @@ async function applyAdvancedConfig(bot, state) {
   if (Object.keys(payload).length === 1) {
     return { ok: true, applied: {} };
   }
-  return host.request("profiles.configure", payload);
+  return host2.request("profiles.configure", payload);
 }
 function labeled(label, control) {
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid gap-1.5",
     children: [
-      jsx("label", {
+      jsx2("label", {
         className: "text-xs font-medium text-(--ui-text-secondary)",
         children: label
       }),
@@ -2291,17 +2687,17 @@ function labeled(label, control) {
   });
 }
 function EditProfileDialog({ bot, open, onClose }) {
-  const metaAll = useValue($botMeta);
+  const metaAll = useValue2($botMeta);
   const meta = bot ? metaAll[bot.name] : null;
   const appearance = bot ? botAppearance(bot.name, meta) : { shape: "circle", color: AVATAR_COLORS[3] };
-  const [shape, setShape] = useState(appearance.shape);
-  const [color, setColor] = useState(appearance.color);
-  const [image, setImage] = useState(appearance.image);
-  const [title, setTitle] = useState(meta?.title || "");
-  const [description, setDescription] = useState(bot?.description || "");
-  const [busy, setBusy] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
-  const [adv, setAdv] = useState(emptyAdvancedState());
+  const [shape, setShape] = useState2(appearance.shape);
+  const [color, setColor] = useState2(appearance.color);
+  const [image, setImage] = useState2(appearance.image);
+  const [title, setTitle] = useState2(meta?.title || "");
+  const [description, setDescription] = useState2(bot?.description || "");
+  const [busy, setBusy] = useState2(false);
+  const [advanced, setAdvanced] = useState2(false);
+  const [adv, setAdv] = useState2(emptyAdvancedState());
   const currentKey = bot ? `${bot.name}:${open}` : null;
   useEffect(() => {
     if (bot && open) {
@@ -2333,12 +2729,12 @@ function EditProfileDialog({ bot, open, onClose }) {
     const desc = description.trim();
     if (desc !== (bot.description || "").trim()) {
       try {
-        await host.request("cli.exec", {
+        await host2.request("cli.exec", {
           argv: ["profile", "describe", bot.name, "--text", desc]
         });
         queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
       } catch (err) {
-        host.notifyError(err, "Saved look locally; description update failed");
+        host2.notifyError(err, "Saved look locally; description update failed");
       }
     }
     if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
@@ -2348,26 +2744,26 @@ function EditProfileDialog({ bot, open, onClose }) {
           ([, ok]) => !ok
         );
         if (failed.length) {
-          host.notify({
+          host2.notify({
             kind: "error",
             message: `Some sections failed: ${failed.map(([k]) => k).join(", ")}`
           });
         }
       } catch (err) {
-        host.notifyError(err, "Advanced configuration failed");
+        host2.notifyError(err, "Advanced configuration failed");
       }
     }
-    host.notify({
+    host2.notify({
       kind: "success",
       message: `${displayName(bot, { title })} updated`
     });
     setBusy(false);
     onClose();
   };
-  return jsx(Dialog, {
+  return jsx2(Dialog2, {
     open,
     onOpenChange: (value) => !value && !busy && onClose(),
-    children: jsxs(DialogContent, {
+    children: jsxs2(DialogContent2, {
       className: advanced ? "max-w-3xl" : "max-w-sm",
       // Same resizable-window treatment as the create dialog.
       style: advanced ? {
@@ -2379,20 +2775,20 @@ function EditProfileDialog({ bot, open, onClose }) {
         maxHeight: "90vh"
       } : void 0,
       children: [
-        jsxs(DialogHeader, {
+        jsxs2(DialogHeader2, {
           children: [
-            jsx(DialogTitle, { children: "Edit Profile" }),
-            jsx(DialogDescription, {
+            jsx2(DialogTitle2, { children: "Edit Profile" }),
+            jsx2(DialogDescription, {
               children: `Appearance and role for ${displayName(bot, null)} (${bot.name}).`
             })
           ]
         }),
-        jsxs("div", {
+        jsxs2("div", {
           className: "grid gap-4",
           children: [
-            jsx("div", {
+            jsx2("div", {
               className: "flex justify-center py-1",
-              children: jsx(BotFace, {
+              children: jsx2(BotFace, {
                 shape,
                 color,
                 image,
@@ -2400,7 +2796,7 @@ function EditProfileDialog({ bot, open, onClose }) {
                 name: bot.name
               })
             }),
-            jsx(AvatarPicker, {
+            jsx2(AvatarPicker, {
               shape,
               color,
               image,
@@ -2411,7 +2807,7 @@ function EditProfileDialog({ bot, open, onClose }) {
             }),
             labeled(
               "Title",
-              jsx(Input, {
+              jsx2(Input2, {
                 placeholder: displayName(bot, null),
                 value: title,
                 onChange: (event) => setTitle(event.target.value)
@@ -2419,28 +2815,28 @@ function EditProfileDialog({ bot, open, onClose }) {
             ),
             labeled(
               "Description",
-              jsx(Textarea, {
+              jsx2(Textarea2, {
                 className: "min-h-16",
                 placeholder: "What should this agent help with?",
                 value: description,
                 onChange: (event) => setDescription(event.target.value)
               })
             ),
-            jsxs("button", {
+            jsxs2("button", {
               type: "button",
               className: "flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
               onClick: () => setAdvanced((v) => !v),
               children: [
-                jsx(Codicon, {
+                jsx2(Codicon2, {
                   name: advanced ? "chevron-down" : "chevron-right",
                   className: "text-[0.8rem]"
                 }),
                 "Advanced — model, skills, toolsets, SOUL.md"
               ]
             }),
-            advanced ? jsx("div", {
+            advanced ? jsx2("div", {
               className: "rounded-md border border-(--ui-stroke-secondary) p-3",
-              children: jsx(AdvancedProfileConfig, {
+              children: jsx2(AdvancedProfileConfig, {
                 bot: bot.name,
                 state: adv,
                 setState: setAdv
@@ -2448,15 +2844,15 @@ function EditProfileDialog({ bot, open, onClose }) {
             }) : null
           ]
         }),
-        jsxs(DialogFooter, {
+        jsxs2(DialogFooter2, {
           children: [
-            jsx(Button, {
+            jsx2(Button2, {
               variant: "ghost",
               disabled: busy,
               onClick: onClose,
               children: "Cancel"
             }),
-            jsx(Button, {
+            jsx2(Button2, {
               disabled: busy,
               onClick: submit,
               children: busy ? "Saving…" : "Save"
@@ -2468,33 +2864,33 @@ function EditProfileDialog({ bot, open, onClose }) {
   });
 }
 function CreateAgentDialog({ open, onClose, roster }) {
-  const [name, setName] = useState("");
+  const [name, setName] = useState2("");
   const setupProfile = null;
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [shape, setShape] = useState("circle");
-  const [color, setColor] = useState(AVATAR_COLORS[3]);
-  const [image, setImage] = useState(null);
-  const [advanced, setAdvanced] = useState(false);
-  const [cloneFrom, setCloneFrom] = useState("__none__");
-  const [model, setModel] = useState("");
-  const [provider, setProvider] = useState("");
-  const [soul, setSoul] = useState("");
-  const [noSkills, setNoSkills] = useState(false);
-  const [shareAuth, setShareAuth] = useState(true);
-  const [advTab, setAdvTab] = useState("general");
-  const [caps, setCaps] = useState(null);
-  const [capsFailed, setCapsFailed] = useState(false);
-  const [dirtyCaps, setDirtyCaps] = useState({
+  const [title, setTitle] = useState2("");
+  const [description, setDescription] = useState2("");
+  const [shape, setShape] = useState2("circle");
+  const [color, setColor] = useState2(AVATAR_COLORS[3]);
+  const [image, setImage] = useState2(null);
+  const [advanced, setAdvanced] = useState2(false);
+  const [cloneFrom, setCloneFrom] = useState2("__none__");
+  const [model, setModel] = useState2("");
+  const [provider, setProvider] = useState2("");
+  const [soul, setSoul] = useState2("");
+  const [noSkills, setNoSkills] = useState2(false);
+  const [shareAuth, setShareAuth] = useState2(true);
+  const [advTab, setAdvTab] = useState2("general");
+  const [caps, setCaps] = useState2(null);
+  const [capsFailed, setCapsFailed] = useState2(false);
+  const [dirtyCaps, setDirtyCaps] = useState2({
     skills: false,
     toolsets: false,
     mcp: false
   });
-  const [capFilter, setCapFilter] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const [capFilter, setCapFilter] = useState2("");
+  const [busy, setBusy] = useState2(false);
+  const [error, setError] = useState2(null);
   const slug = slugify(name);
-  const valid = slug.length > 0 && NAME_RE.test(slug);
+  const valid = slug.length > 0 && NAME_RE2.test(slug);
   const taken = roster.some((b) => b.name === slug);
   const reset = () => {
     setName("");
@@ -2524,8 +2920,8 @@ function CreateAgentDialog({ open, onClose, roster }) {
       return;
     }
     Promise.all([
-      host.request("profiles.describe", { name: capSource }),
-      host.request("mcp.catalog", {}).catch(() => null)
+      host2.request("profiles.describe", { name: capSource }),
+      host2.request("mcp.catalog", {}).catch(() => null)
     ]).then(([res, cat]) => {
       const configured = res.mcp_servers || [];
       const have = new Set(configured.map((m) => m.name));
@@ -2572,7 +2968,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setError(null);
     try {
       const descriptionText = [title, description].filter(Boolean).join(" — ");
-      await host.request("profiles.create", {
+      await host2.request("profiles.create", {
         name: slug,
         description: descriptionText,
         clone_from: cloneFrom === "__none__" ? null : cloneFrom,
@@ -2603,7 +2999,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
           capPayload.enabled_mcp_servers = caps.mcp.filter((m) => m.enabled).map((m) => m.name);
         }
         if (Object.keys(capPayload).length) {
-          await host.request("profiles.configure", {
+          await host2.request("profiles.configure", {
             name: slug,
             ...capPayload
           });
@@ -2618,7 +3014,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
         created: Date.now()
       });
       queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
-      host.notify({
+      host2.notify({
         kind: "success",
         message: `Agent "${displayName({ name: slug, title })}" created`
       });
@@ -2627,12 +3023,12 @@ function CreateAgentDialog({ open, onClose, roster }) {
       $selectedBot.set(slug);
       try {
         const sid = await createCanonicalChat(slug);
-        if (!sid && typeof host.newChat === "function") {
-          host.newChat(slug);
+        if (!sid && typeof host2.newChat === "function") {
+          host2.newChat(slug);
         }
       } catch {
-        if (typeof host.newChat === "function") {
-          host.newChat(slug);
+        if (typeof host2.newChat === "function") {
+          host2.newChat(slug);
         }
       }
     } catch (err) {
@@ -2640,7 +3036,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-  return jsx(Dialog, {
+  return jsx2(Dialog2, {
     open,
     onOpenChange: (value) => {
       if (!value && !busy) {
@@ -2648,7 +3044,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
         onClose();
       }
     },
-    children: jsxs(DialogContent, {
+    children: jsxs2(DialogContent2, {
       className: advanced ? "max-w-3xl" : "max-w-md",
       // Native resize handle (bottom-right corner): the dialog becomes a
       // window the user can grow/shrink. overflow:auto is required for CSS
@@ -2662,20 +3058,20 @@ function CreateAgentDialog({ open, onClose, roster }) {
         maxHeight: "90vh"
       } : void 0,
       children: [
-        jsxs(DialogHeader, {
+        jsxs2(DialogHeader2, {
           children: [
-            jsx(DialogTitle, { children: "New Agent" }),
-            jsx(DialogDescription, {
+            jsx2(DialogTitle2, { children: "New Agent" }),
+            jsx2(DialogDescription, {
               children: "A named teammate with its own memory, skills, and chat. It can message your other agents."
             })
           ]
         }),
-        jsxs("div", {
+        jsxs2("div", {
           className: "grid gap-3.5",
           children: [
-            jsx("div", {
+            jsx2("div", {
               className: "flex justify-center py-1",
-              children: jsx(BotFace, {
+              children: jsx2(BotFace, {
                 shape,
                 color,
                 image,
@@ -2683,7 +3079,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                 name: slug || "agent"
               })
             }),
-            jsx(AvatarPicker, {
+            jsx2(AvatarPicker, {
               shape,
               color,
               image,
@@ -2694,20 +3090,20 @@ function CreateAgentDialog({ open, onClose, roster }) {
             }),
             labeled(
               "Name",
-              jsx(Input, {
+              jsx2(Input2, {
                 autoFocus: true,
                 placeholder: "inbox-triage",
                 value: name,
                 onChange: (event) => setName(event.target.value)
               })
             ),
-            taken ? jsx("div", {
+            taken ? jsx2("div", {
               className: "text-xs text-(--ui-accent)",
               children: `An agent named "${slug}" already exists.`
             }) : null,
             labeled(
               "Title",
-              jsx(Input, {
+              jsx2(Input2, {
                 placeholder: "Inbox Triage",
                 value: title,
                 onChange: (event) => setTitle(event.target.value)
@@ -2715,14 +3111,14 @@ function CreateAgentDialog({ open, onClose, roster }) {
             ),
             labeled(
               "Description",
-              jsx(Textarea, {
+              jsx2(Textarea2, {
                 className: "min-h-16",
                 placeholder: "What should this Bot help with?",
                 value: description,
                 onChange: (event) => setDescription(event.target.value)
               })
             ),
-            jsxs("button", {
+            jsxs2("button", {
               type: "button",
               className: "flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
               onClick: () => {
@@ -2734,17 +3130,17 @@ function CreateAgentDialog({ open, onClose, roster }) {
                 });
               },
               children: [
-                jsx(Codicon, {
+                jsx2(Codicon2, {
                   name: advanced ? "chevron-down" : "chevron-right",
                   className: "text-[0.8rem]"
                 }),
                 "Advanced"
               ]
             }),
-            advanced ? jsxs("div", {
+            advanced ? jsxs2("div", {
               className: "grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3",
               children: [
-                jsx("div", {
+                jsx2("div", {
                   className: "flex gap-1",
                   children: [
                     ["general", "General"],
@@ -2752,7 +3148,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                     ["toolsets", "Tools"],
                     ["mcp", "MCP"]
                   ].map(
-                    ([id, label]) => jsx(
+                    ([id, label]) => jsx2(
                       "button",
                       {
                         type: "button",
@@ -2773,12 +3169,12 @@ function CreateAgentDialog({ open, onClose, roster }) {
                     )
                   )
                 }),
-                advTab === "general" ? jsxs("div", {
+                advTab === "general" ? jsxs2("div", {
                   className: "grid gap-3.5",
                   children: [
                     labeled(
                       "Clone from profile",
-                      jsxs(Select, {
+                      jsxs2(Select, {
                         value: cloneFrom,
                         onValueChange: (value) => {
                           setCloneFrom(value);
@@ -2786,18 +3182,18 @@ function CreateAgentDialog({ open, onClose, roster }) {
                           setCapsFailed(false);
                         },
                         children: [
-                          jsx(SelectTrigger, {
+                          jsx2(SelectTrigger, {
                             className: "h-8 rounded-md",
-                            children: jsx(SelectValue, {})
+                            children: jsx2(SelectValue, {})
                           }),
-                          jsxs(SelectContent, {
+                          jsxs2(SelectContent, {
                             children: [
-                              jsx(SelectItem, {
+                              jsx2(SelectItem, {
                                 value: "__none__",
                                 children: "Fresh profile (bundled skills)"
                               }),
                               ...roster.map(
-                                (b) => jsx(
+                                (b) => jsx2(
                                   SelectItem,
                                   { value: b.name, children: b.name },
                                   b.name
@@ -2808,7 +3204,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                         ]
                       })
                     ),
-                    jsx(ModelPicker, {
+                    jsx2(ModelPicker, {
                       value: { provider, model },
                       onChange: (patch) => {
                         if ("provider" in patch) {
@@ -2822,31 +3218,31 @@ function CreateAgentDialog({ open, onClose, roster }) {
                     }),
                     labeled(
                       "SOUL.md (optional — replaces the generated persona)",
-                      jsx(Textarea, {
+                      jsx2(Textarea2, {
                         className: "min-h-24 font-mono text-xs leading-5",
                         placeholder: "Leave blank to auto-generate from name/title/description + agent-messaging roster.",
                         value: soul,
                         onChange: (event) => setSoul(event.target.value)
                       })
                     ),
-                    jsxs("label", {
+                    jsxs2("label", {
                       className: "flex items-center gap-2 text-xs text-(--ui-text-secondary)",
                       children: [
-                        jsx(Checkbox, {
+                        jsx2(Checkbox, {
                           checked: shareAuth,
                           onCheckedChange: (value) => setShareAuth(Boolean(value))
                         }),
                         "Share keys & accounts with the main profile"
                       ]
                     }),
-                    jsx("div", {
+                    jsx2("div", {
                       className: "pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)",
                       children: "Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy."
                     }),
-                    jsxs("label", {
+                    jsxs2("label", {
                       className: "flex items-center gap-2 text-xs text-(--ui-text-secondary)",
                       children: [
-                        jsx(Checkbox, {
+                        jsx2(Checkbox, {
                           checked: noSkills,
                           onCheckedChange: (value) => setNoSkills(Boolean(value))
                         }),
@@ -2854,24 +3250,24 @@ function CreateAgentDialog({ open, onClose, roster }) {
                       ]
                     })
                   ]
-                }) : capsFailed ? jsx("div", {
+                }) : capsFailed ? jsx2("div", {
                   className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
                   children: "Capability catalog needs a newer gateway (restart it after updating Hermes)."
-                }) : caps ? advTab === "skills" ? noSkills ? jsx("div", {
+                }) : caps ? advTab === "skills" ? noSkills ? jsx2("div", {
                   className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
                   children: "“Create empty” is checked — no bundled skills will be installed."
-                }) : jsxs("div", {
+                }) : jsxs2("div", {
                   className: "grid gap-1.5",
                   children: [
-                    jsx(Input, {
+                    jsx2(Input2, {
                       className: "h-7 text-xs",
                       placeholder: "Filter skills…",
                       value: capFilter,
                       onChange: (event) => setCapFilter(event.target.value)
                     }),
-                    jsx(ScrollArea, {
+                    jsx2(ScrollArea2, {
                       style: { maxHeight: 200 },
-                      children: jsx(CheckList, {
+                      children: jsx2(CheckList, {
                         items: capFilter.trim() ? caps.skills.filter(
                           (s) => s.name.toLowerCase().includes(
                             capFilter.trim().toLowerCase()
@@ -2881,11 +3277,11 @@ function CreateAgentDialog({ open, onClose, roster }) {
                         columns: 2
                       })
                     }),
-                    jsx("div", {
+                    jsx2("div", {
                       className: "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                       children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
                     }),
-                    jsx(HubSkillsSection, {
+                    jsx2(HubSkillsSection, {
                       forProfile: null,
                       onInstalled: (name2) => setCaps(
                         (prev) => !prev || prev.skills.some(
@@ -2900,40 +3296,40 @@ function CreateAgentDialog({ open, onClose, roster }) {
                       )
                     })
                   ]
-                }) : advTab === "toolsets" ? jsxs("div", {
+                }) : advTab === "toolsets" ? jsxs2("div", {
                   className: "grid gap-1.5",
                   children: [
-                    jsx(ScrollArea, {
+                    jsx2(ScrollArea2, {
                       style: { maxHeight: 200 },
-                      children: jsx(CheckList, {
+                      children: jsx2(CheckList, {
                         items: caps.toolsets,
                         onToggle: (name2, enabled) => toggleCap("toolsets", name2, enabled),
                         columns: 2
                       })
                     }),
-                    jsx("div", {
+                    jsx2("div", {
                       className: "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                       children: "Leaving all (or none) checked keeps the default toolset behavior."
                     })
                   ]
-                }) : caps.mcp.length === 0 ? jsx("div", {
+                }) : caps.mcp.length === 0 ? jsx2("div", {
                   className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
                   children: "No MCP servers configured or in the catalog."
-                }) : jsxs("div", {
+                }) : jsxs2("div", {
                   className: "grid gap-1.5",
                   children: [
-                    jsx(ScrollArea, {
+                    jsx2(ScrollArea2, {
                       style: { maxHeight: 200 },
-                      children: jsx("div", {
+                      children: jsx2("div", {
                         className: "grid gap-1",
                         children: caps.mcp.map((m) => {
                           const needsSetup = m.fromCatalog && !m.installed && (m.requires || []).length > 0;
-                          return jsxs(
+                          return jsxs2(
                             "label",
                             {
                               className: "flex items-start gap-2 text-xs text-(--ui-text-secondary)",
                               children: [
-                                jsx(Checkbox, {
+                                jsx2(Checkbox, {
                                   checked: !!m.enabled,
                                   disabled: needsSetup,
                                   onCheckedChange: (value) => toggleCap(
@@ -2942,17 +3338,17 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                     Boolean(value)
                                   )
                                 }),
-                                jsxs("span", {
+                                jsxs2("span", {
                                   className: "min-w-0",
                                   children: [
-                                    jsx("span", {
+                                    jsx2("span", {
                                       children: m.name
                                     }),
-                                    m.fromCatalog ? jsx("span", {
+                                    m.fromCatalog ? jsx2("span", {
                                       className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
                                       children: needsSetup ? setupProfile ? null : "needs setup (" + (m.requires || []).join(", ") + ") — save the agent first, then set up here" : m.installed ? "catalog · installed" : "catalog"
                                     }) : null,
-                                    needsSetup && setupProfile ? jsx(McpSetupButton, {
+                                    needsSetup && setupProfile ? jsx2(McpSetupButton, {
                                       profile: setupProfile,
                                       entry: m,
                                       onDone: () => toggleCap(
@@ -2961,7 +3357,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                         true
                                       )
                                     }) : null,
-                                    m.description ? jsx("div", {
+                                    m.description ? jsx2("div", {
                                       className: "truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                                       children: m.description
                                     }) : null
@@ -2974,29 +3370,29 @@ function CreateAgentDialog({ open, onClose, roster }) {
                         })
                       })
                     }),
-                    jsx("div", {
+                    jsx2("div", {
                       className: "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                       children: "Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting)."
                     })
                   ]
-                }) : jsx("div", {
+                }) : jsx2("div", {
                   className: "flex justify-center py-4",
-                  children: jsx(GlyphSpinner, {
+                  children: jsx2(GlyphSpinner, {
                     spinner: "breathe",
                     className: "text-(--ui-text-tertiary)"
                   })
                 })
               ]
             }) : null,
-            error ? jsx("div", {
+            error ? jsx2("div", {
               className: "rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)",
               children: error
             }) : null
           ]
         }),
-        jsxs(DialogFooter, {
+        jsxs2(DialogFooter2, {
           children: [
-            jsx(Button, {
+            jsx2(Button2, {
               variant: "ghost",
               disabled: busy,
               onClick: () => {
@@ -3005,7 +3401,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
               },
               children: "Cancel"
             }),
-            jsx(Button, {
+            jsx2(Button2, {
               disabled: busy || !valid || taken,
               onClick: submit,
               children: busy ? "Creating…" : "Create Agent"
@@ -3027,7 +3423,7 @@ function routineTitle(job) {
 function useRoutines() {
   return useQuery({
     queryKey: ROUTINES_KEY,
-    queryFn: () => host.request("cron.manage", { action: "list", include_disabled: true }),
+    queryFn: () => host2.request("cron.manage", { action: "list", include_disabled: true }),
     refetchInterval: 2e4,
     staleTime: 8e3
   });
@@ -3039,11 +3435,11 @@ function routinePrompt(bot, title, instruction, activeProfile) {
   if (normalizedProfileName(bot) && normalizedProfileName(bot) === normalizedProfileName(activeProfile)) {
     return instruction;
   }
-  const safeBot = NAME_RE.test(bot) ? bot : "default";
+  const safeBot = NAME_RE2.test(bot) ? bot : "default";
   const safeTitle = sanitizeTitle(title);
   return `You are running the scheduled routine ${JSON.stringify(safeTitle)} for agent '${safeBot}'. Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:
 
-hermes -p ${safeBot} chat -c ${shellQuote(`Routine: ${safeTitle}`)} -q ${shellQuote(`[Scheduled routine] ${instruction}`)}
+hermes -p ${safeBot} chat -c ${shellQuote2(`Routine: ${safeTitle}`)} -q ${shellQuote2(`[Scheduled routine] ${instruction}`)}
 
 Run the command EXACTLY as written — do not re-quote, expand, or "fix" it. If the command fails, report the error instead.`;
 }
@@ -3072,8 +3468,8 @@ function scheduleLabel(schedule) {
   return schedule || "";
 }
 function RoutineRow({ job, onChanged }) {
-  const [busy, setBusy] = useState(false);
-  const [pendingActive, setPendingActive] = useState(null);
+  const [busy, setBusy] = useState2(false);
+  const [pendingActive, setPendingActive] = useState2(null);
   const serverActive = job.enabled !== false && job.state !== "paused";
   const active = pendingActive === null ? serverActive : pendingActive;
   if (pendingActive !== null && pendingActive === serverActive) {
@@ -3088,51 +3484,51 @@ function RoutineRow({ job, onChanged }) {
       setPendingActive(action === "resume");
     }
     try {
-      await host.request("cron.manage", { action, name: job.job_id });
+      await host2.request("cron.manage", { action, name: job.job_id });
       onChanged();
     } catch (err) {
       setPendingActive(null);
-      host.notifyError(err, "Cronjob update failed");
+      host2.notifyError(err, "Cronjob update failed");
     } finally {
       setBusy(false);
     }
   };
-  return jsxs("div", {
+  return jsxs2("div", {
     className: cn(
       "group grid gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5 transition-colors",
       "hover:border-(--ui-stroke-primary, var(--ui-stroke-secondary))"
     ),
     children: [
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-center gap-2",
         children: [
-          jsx("span", {
+          jsx2("span", {
             "aria-hidden": true,
             className: cn(
               "size-1.5 shrink-0 rounded-full",
               active ? "bg-emerald-500" : "bg-(--ui-text-quaternary)"
             )
           }),
-          jsx("span", {
+          jsx2("span", {
             className: cn(
               "min-w-0 flex-1 truncate text-xs font-medium",
               !active && "text-(--ui-text-tertiary)"
             ),
             children: routineTitle(job)
           }),
-          jsx(Switch, {
+          jsx2(Switch, {
             checked: active,
             disabled: busy,
             onCheckedChange: (value) => act(value ? "resume" : "pause")
           }),
-          jsx(Tip, {
+          jsx2(Tip, {
             label: "Delete cronjob",
-            children: jsx("button", {
+            children: jsx2("button", {
               type: "button",
               disabled: busy,
               className: "flex size-5 items-center justify-center rounded text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--chrome-action-hover) hover:text-foreground",
               onClick: () => act("remove"),
-              children: jsx(Codicon, {
+              children: jsx2(Codicon2, {
                 name: "trash",
                 className: "text-[0.75rem]"
               })
@@ -3140,17 +3536,17 @@ function RoutineRow({ job, onChanged }) {
           })
         ]
       }),
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-center justify-between gap-2 pl-3.5",
         children: [
-          jsxs("span", {
+          jsxs2("span", {
             className: "inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)",
             children: [
-              jsx(Codicon, { name: "calendar", className: "text-[0.7rem]" }),
+              jsx2(Codicon2, { name: "calendar", className: "text-[0.7rem]" }),
               scheduleLabel(job.schedule)
             ]
           }),
-          jsx("span", {
+          jsx2("span", {
             className: "truncate text-[0.65rem] text-(--ui-text-quaternary)",
             children: active && job.next_run_at ? `next ${relativeTime(new Date(job.next_run_at).getTime())}` : "paused"
           })
@@ -3244,17 +3640,17 @@ function scheduleSummary(state) {
   }
 }
 function pickerSelect(value, onChange, options) {
-  return jsxs(Select, {
+  return jsxs2(Select, {
     value,
     onValueChange: onChange,
     children: [
-      jsx(SelectTrigger, {
+      jsx2(SelectTrigger, {
         className: "h-8 rounded-md",
-        children: jsx(SelectValue, {})
+        children: jsx2(SelectValue, {})
       }),
-      jsx(SelectContent, {
+      jsx2(SelectContent, {
         children: options.map(
-          (o) => jsx(SelectItem, { value: o.id, children: o.label }, o.id)
+          (o) => jsx2(SelectItem, { value: o.id, children: o.label }, o.id)
         )
       })
     ]
@@ -3265,10 +3661,10 @@ function SchedulePicker({ state, setState }) {
   const needsTime = ["daily", "weekdays", "weekly", "monthly"].includes(
     state.freq
   );
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "grid gap-2",
     children: [
-      jsxs("div", {
+      jsxs2("div", {
         style: {
           display: "grid",
           gridTemplateColumns: needsTime ? "1fr 1fr" : "1fr",
@@ -3279,14 +3675,14 @@ function SchedulePicker({ state, setState }) {
           needsTime ? pickerSelect(state.time, (v) => upd({ time: v }), TIMES) : null
         ]
       }),
-      state.freq === "once" ? jsxs("div", {
+      state.freq === "once" ? jsxs2("div", {
         style: {
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
           gap: "8px"
         },
         children: [
-          jsx(Input, {
+          jsx2(Input2, {
             className: "h-8",
             placeholder: "30",
             value: state.onceN,
@@ -3304,7 +3700,7 @@ function SchedulePicker({ state, setState }) {
       state.freq === "weekly" ? pickerSelect(state.weekday, (v) => upd({ weekday: v }), WEEKDAYS) : null,
       state.freq === "monthly" ? labeled(
         "Day of month",
-        jsx(Input, {
+        jsx2(Input2, {
           className: "h-8",
           placeholder: "1",
           value: state.monthday,
@@ -3313,14 +3709,14 @@ function SchedulePicker({ state, setState }) {
           })
         })
       ) : null,
-      state.freq === "interval" ? jsxs("div", {
+      state.freq === "interval" ? jsxs2("div", {
         style: {
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
           gap: "8px"
         },
         children: [
-          jsx(Input, {
+          jsx2(Input2, {
             className: "h-8",
             placeholder: "2",
             value: state.intervalN,
@@ -3339,20 +3735,20 @@ function SchedulePicker({ state, setState }) {
           )
         ]
       }) : null,
-      state.freq === "advanced" ? jsx(Input, {
+      state.freq === "advanced" ? jsx2(Input2, {
         className: "h-8 font-mono text-xs",
         placeholder: "every 1d · every 2h · 0 9 * * * (cron)",
         value: state.raw,
         onChange: (event) => upd({ raw: event.target.value })
       }) : null,
-      state.freq !== "once" && state.freq !== "advanced" ? jsxs("div", {
+      state.freq !== "once" && state.freq !== "advanced" ? jsxs2("div", {
         className: "flex items-center gap-2",
         children: [
-          jsx("span", {
+          jsx2("span", {
             className: "text-xs text-(--ui-text-tertiary)",
             children: "Stop after"
           }),
-          jsx(Input, {
+          jsx2(Input2, {
             className: "h-7 w-16 text-xs",
             placeholder: "∞",
             value: state.repeatN,
@@ -3360,13 +3756,13 @@ function SchedulePicker({ state, setState }) {
               repeatN: event.target.value.replace(/[^0-9]/g, "").slice(0, 4)
             })
           }),
-          jsx("span", {
+          jsx2("span", {
             className: "text-xs text-(--ui-text-tertiary)",
             children: "runs (blank = forever)"
           })
         ]
       }) : null,
-      jsx("div", {
+      jsx2("div", {
         className: "text-[0.65rem] text-(--ui-text-quaternary)",
         children: `${scheduleSummary(state)} · ${composeSchedule(state) || "—"}`
       })
@@ -3388,12 +3784,12 @@ function defaultScheduleState() {
   };
 }
 function CreateRoutineDialog({ bot, open, onClose }) {
-  const [name, setName] = useState("");
-  const [instruction, setInstruction] = useState("");
-  const [sched, setSched] = useState(defaultScheduleState());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const activeProfile = useValue(host.state.profile);
+  const [name, setName] = useState2("");
+  const [instruction, setInstruction] = useState2("");
+  const [sched, setSched] = useState2(defaultScheduleState());
+  const [busy, setBusy] = useState2(false);
+  const [error, setError] = useState2(null);
+  const activeProfile = useValue2(host2.state.profile);
   const schedule = composeSchedule(sched);
   const reset = () => {
     setName("");
@@ -3412,7 +3808,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
     setError(null);
     try {
       const repeatN = sched.freq !== "once" && sched.freq !== "advanced" && String(sched.repeatN || "").trim() ? Math.max(1, parseInt(sched.repeatN, 10) || 1) : null;
-      await host.request("cron.manage", {
+      await host2.request("cron.manage", {
         action: "add",
         name: `[bot:${bot}] ${title}`,
         schedule: schedule.trim(),
@@ -3420,7 +3816,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         ...repeatN ? { repeat: repeatN } : {}
       });
       queryClient.invalidateQueries({ queryKey: ROUTINES_KEY });
-      host.notify({ kind: "success", message: `Cronjob "${title}" scheduled` });
+      host2.notify({ kind: "success", message: `Cronjob "${title}" scheduled` });
       reset();
       onClose();
     } catch (err) {
@@ -3428,7 +3824,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-  return jsx(Dialog, {
+  return jsx2(Dialog2, {
     open,
     onOpenChange: (value) => {
       if (!value && !busy) {
@@ -3436,23 +3832,23 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         onClose();
       }
     },
-    children: jsxs(DialogContent, {
+    children: jsxs2(DialogContent2, {
       className: "max-w-md",
       children: [
-        jsxs(DialogHeader, {
+        jsxs2(DialogHeader2, {
           children: [
-            jsx(DialogTitle, { children: "New Cronjob" }),
-            jsx(DialogDescription, {
+            jsx2(DialogTitle2, { children: "New Cronjob" }),
+            jsx2(DialogDescription, {
               children: `A recurring task ${displayName({ name: bot }, $botMeta.get()[bot])} runs on a schedule. Runs land in its own chat history.`
             })
           ]
         }),
-        jsxs("div", {
+        jsxs2("div", {
           className: "grid gap-3.5",
           children: [
             labeled(
               "Name",
-              jsx(Input, {
+              jsx2(Input2, {
                 autoFocus: true,
                 placeholder: "Name this cronjob",
                 value: name,
@@ -3461,7 +3857,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
             ),
             labeled(
               "Instruction",
-              jsx(Textarea, {
+              jsx2(Textarea2, {
                 className: "min-h-20",
                 placeholder: "What should this cronjob do each time it runs?",
                 value: instruction,
@@ -3470,17 +3866,17 @@ function CreateRoutineDialog({ bot, open, onClose }) {
             ),
             labeled(
               "When to run",
-              jsx(SchedulePicker, { state: sched, setState: setSched })
+              jsx2(SchedulePicker, { state: sched, setState: setSched })
             ),
-            error ? jsx("div", {
+            error ? jsx2("div", {
               className: "rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)",
               children: error
             }) : null
           ]
         }),
-        jsxs(DialogFooter, {
+        jsxs2(DialogFooter2, {
           children: [
-            jsx(Button, {
+            jsx2(Button2, {
               variant: "ghost",
               disabled: busy,
               onClick: () => {
@@ -3489,7 +3885,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
               },
               children: "Cancel"
             }),
-            jsx(Button, {
+            jsx2(Button2, {
               disabled: busy || !name.trim() || !instruction.trim() || !schedule.trim(),
               onClick: submit,
               children: busy ? "Scheduling…" : "Create Cronjob"
@@ -3501,85 +3897,85 @@ function CreateRoutineDialog({ bot, open, onClose }) {
   });
 }
 function RoutinesPane() {
-  const selected = useValue($selectedBot);
-  const gatewayProfile = useValue(host.state.profile);
+  const selected = useValue2($selectedBot);
+  const gatewayProfile = useValue2(host2.state.profile);
   const bot = (gatewayProfile || selected || "default").trim() || "default";
-  const meta = useValue($botMeta)[bot];
+  const meta = useValue2($botMeta)[bot];
   const { shape, color, image } = botAppearance(bot, meta);
   const { data, isLoading, refetch } = useRoutines();
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState2(false);
   const jobs = (data?.jobs ?? []).filter((job) => routineBot(job) === bot);
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "flex h-full flex-col",
     children: [
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-center gap-2 px-3 pt-3 pb-2",
         children: [
-          jsx(BotFace, { shape, color, image, size: 22, name: bot }),
-          jsxs("div", {
+          jsx2(BotFace, { shape, color, image, size: 22, name: bot }),
+          jsxs2("div", {
             className: "min-w-0 flex-1",
             children: [
-              jsxs("div", {
+              jsxs2("div", {
                 className: "flex min-w-0 items-baseline gap-1.5 truncate",
                 children: [
-                  jsx("div", {
+                  jsx2("div", {
                     className: "truncate text-xs font-semibold",
                     children: displayName({ name: bot }, meta)
                   }),
-                  showsHandle(bot, meta) ? jsx("span", {
+                  showsHandle(bot, meta) ? jsx2("span", {
                     className: "shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)",
                     children: `@${botHandle(bot)}`
                   }) : null
                 ]
               }),
-              jsx("div", {
+              jsx2("div", {
                 className: "text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)",
                 children: "Cronjobs"
               })
             ]
           }),
-          jsx(Tip, {
+          jsx2(Tip, {
             label: "New Cronjob",
-            children: jsx("button", {
+            children: jsx2("button", {
               type: "button",
               className: "flex size-6 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground",
               onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: "add" })
+              children: jsx2(Codicon2, { name: "add" })
             })
           })
         ]
       }),
-      jsx("div", { className: "mx-3 border-t border-(--ui-stroke-secondary)" }),
-      isLoading ? jsx("div", {
+      jsx2("div", { className: "mx-3 border-t border-(--ui-stroke-secondary)" }),
+      isLoading ? jsx2("div", {
         className: "flex flex-1 items-center justify-center",
-        children: jsx(GlyphSpinner, {
+        children: jsx2(GlyphSpinner, {
           spinner: "breathe",
           className: "text-(--ui-text-tertiary)"
         })
-      }) : jobs.length === 0 ? jsxs("div", {
+      }) : jobs.length === 0 ? jsxs2("div", {
         className: "flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center",
         children: [
-          jsx(Codicon, {
+          jsx2(Codicon2, {
             name: "calendar",
             className: "text-[1.6rem] text-(--ui-text-quaternary)"
           }),
-          jsx("div", {
+          jsx2("div", {
             className: "text-xs leading-5 text-(--ui-text-tertiary)",
             children: "Cronjobs are recurring tasks this agent runs on a schedule."
           }),
-          jsx(Button, {
+          jsx2(Button2, {
             variant: "secondary",
             size: "sm",
             onClick: () => setCreateOpen(true),
             children: "Create Cronjob"
           })
         ]
-      }) : jsx(ScrollArea, {
+      }) : jsx2(ScrollArea2, {
         className: "min-h-0 flex-1",
-        children: jsx("div", {
+        children: jsx2("div", {
           className: "grid gap-1.5 px-2.5 py-2",
           children: jobs.map(
-            (job) => jsx(
+            (job) => jsx2(
               RoutineRow,
               { job, onChanged: () => void refetch() },
               job.job_id
@@ -3587,7 +3983,7 @@ function RoutinesPane() {
           )
         })
       }),
-      jsx(CreateRoutineDialog, {
+      jsx2(CreateRoutineDialog, {
         bot,
         open: createOpen,
         onClose: () => {
@@ -3600,9 +3996,9 @@ function RoutinesPane() {
 }
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster();
-  const gatewayUp = useValue(host.state.gateway) === "open";
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
+  const gatewayUp = useValue2(host2.state.gateway) === "open";
+  const [createOpen, setCreateOpen] = useState2(false);
+  const [editing, setEditing] = useState2(null);
   const prevGatewayUp = useRef(gatewayUp);
   useEffect(() => {
     if (gatewayUp && !prevGatewayUp.current) {
@@ -3635,54 +4031,54 @@ function BotsPane() {
     mergeServerMeta(live);
     pullServerAvatars(live);
     trackInboundActivity(live);
-    if (typeof host.warmProfile === "function") {
+    if (typeof host2.warmProfile === "function") {
       for (const bot of live) {
         try {
-          host.warmProfile(bot.name);
+          host2.warmProfile(bot.name);
         } catch {
         }
       }
     }
   }
   const staleNotice = error && !live && roster.length ? "Roster refresh failed — showing the last good list." + (gatewayUp ? "" : " Waiting for the gateway to reconnect…") : null;
-  return jsxs("div", {
+  return jsxs2("div", {
     className: "flex h-full flex-col",
     children: [
-      jsxs("div", {
+      jsxs2("div", {
         className: "flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5",
         children: [
-          jsx("span", {
+          jsx2("span", {
             className: "text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)",
             children: "Bots"
           }),
-          jsx(Tip, {
+          jsx2(Tip, {
             label: "New Agent",
-            children: jsx("button", {
+            children: jsx2("button", {
               type: "button",
               className: "flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground",
               onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: "add" })
+              children: jsx2(Codicon2, { name: "add" })
             })
           })
         ]
       }),
-      staleNotice ? jsx("div", {
+      staleNotice ? jsx2("div", {
         className: "mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)",
         children: staleNotice
       }) : null,
-      isLoading && !roster.length ? jsx("div", {
+      isLoading && !roster.length ? jsx2("div", {
         className: "flex flex-1 items-center justify-center",
-        children: jsx(GlyphSpinner, {
+        children: jsx2(GlyphSpinner, {
           spinner: "breathe",
           className: "text-(--ui-text-tertiary)"
         })
-      }) : error && !roster.length ? jsxs("div", {
+      }) : error && !roster.length ? jsxs2("div", {
         className: "grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)",
         children: [
-          jsx("div", {
+          jsx2("div", {
             children: gatewayUp ? `Roster unavailable: ${error instanceof Error ? error.message : "gateway error"}. If your gateway predates profiles.list, update Hermes and restart the gateway.` : "Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)"
           }),
-          jsx(Button, {
+          jsx2(Button2, {
             variant: "secondary",
             size: "sm",
             className: "justify-self-start",
@@ -3690,29 +4086,30 @@ function BotsPane() {
             children: "Retry now"
           })
         ]
-      }) : roster.length === 0 ? jsx(EmptyState, {
+      }) : roster.length === 0 ? jsx2(EmptyState2, {
         icon: "hubot",
         title: "No agents yet",
         description: "Create your first teammate."
-      }) : jsx(ScrollArea, {
+      }) : jsx2(ScrollArea2, {
         className: "hermes-bots-roster min-h-0 flex-1",
-        children: jsx("div", {
+        children: jsx2("div", {
           className: "grid w-full min-w-0 gap-0.5 px-1.5 pb-2",
           children: roster.map(
-            (bot) => jsx(BotRow, { bot, onEdit: setEditing }, bot.name)
+            (bot) => jsx2(BotRow, { bot, onEdit: setEditing }, bot.name)
           )
         })
       }),
-      jsx("div", {
+      jsx2(GroupsSection, { roster }),
+      jsx2("div", {
         className: "border-t border-(--ui-stroke-secondary) p-2",
-        children: jsxs(Button, {
+        children: jsxs2(Button2, {
           className: "w-full justify-center gap-1.5",
           variant: "secondary",
           onClick: () => setCreateOpen(true),
-          children: [jsx(Codicon, { name: "add" }), "New Agent"]
+          children: [jsx2(Codicon2, { name: "add" }), "New Agent"]
         })
       }),
-      jsx(CreateAgentDialog, {
+      jsx2(CreateAgentDialog, {
         open: createOpen,
         onClose: () => {
           setCreateOpen(false);
@@ -3720,7 +4117,7 @@ function BotsPane() {
         },
         roster
       }),
-      jsx(EditProfileDialog, {
+      jsx2(EditProfileDialog, {
         bot: editing,
         open: Boolean(editing),
         onClose: () => {
@@ -3761,7 +4158,14 @@ var plugin_entry_default = {
       }).catch(() => void 0);
     } catch {
     }
-    host.state.profile.listen((profile) => {
+    setGroupsPluginCtx(ctx);
+    try {
+      Promise.resolve(ctx.storage?.get?.("groups")).then((v) => {
+        if (v !== void 0) hydrateGroups(v);
+      }).catch(() => void 0);
+    } catch {
+    }
+    host2.state.profile.listen((profile) => {
       if (profile && typeof profile === "string") {
         $selectedBot.set(profile);
       }
@@ -3771,7 +4175,7 @@ var plugin_entry_default = {
       area: "panes",
       title: "Bots",
       data: { placement: "left", width: "260px" },
-      render: () => jsx(BotsPane, {})
+      render: () => jsx2(BotsPane, {})
     });
     ctx.register({
       id: "routines",
@@ -3782,7 +4186,7 @@ var plugin_entry_default = {
         dock: { pane: "workspace", pos: "right" },
         width: "250px"
       },
-      render: () => jsx(RoutinesPane, {})
+      render: () => jsx2(RoutinesPane, {})
     });
     ctx.register({
       id: "new-agent",
@@ -3792,7 +4196,7 @@ var plugin_entry_default = {
         label: "New Agent…",
         keywords: ["bot", "agent", "profile", "teammate", "create"],
         run: () => {
-          host.notify({
+          host2.notify({
             kind: "info",
             message: "Open the Bots pane and hit “New Agent”."
           });
@@ -3810,9 +4214,9 @@ var plugin_entry_default = {
             const activeBot = $selectedBot.get();
             const meta = activeBot ? $botMeta.get()[activeBot] : null;
             const pinnedId = meta?.chat || meta?.chat_pin || null;
-            const currentId = host.activeSessionId?.get?.() ?? null;
+            const currentId = host2.activeSessionId?.get?.() ?? null;
             if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
-              host.notify({
+              host2.notify({
                 kind: "info",
                 title: "This chat never resets",
                 message: "Bot chats are one continuous conversation — compacting instead. For a throwaway session with this agent, use Sessions mode."
@@ -3825,7 +4229,7 @@ var plugin_entry_default = {
           }
           let names = [];
           try {
-            const res = await host.request("profiles.list", {
+            const res = await host2.request("profiles.list", {
               include_sessions: false
             });
             names = (res?.profiles ?? []).map((p) => p.name);
@@ -3833,7 +4237,7 @@ var plugin_entry_default = {
             return draft;
           }
           const prose = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " ");
-          const active = (host.state.profile.get() || "default").trim() || "default";
+          const active = (host2.state.profile.get() || "default").trim() || "default";
           const mentioned = [];
           for (const match of prose.matchAll(
             /(^|\s)@([a-z0-9][a-z0-9_-]*)/gi
@@ -3858,7 +4262,7 @@ var plugin_entry_default = {
           const safeHandle = botHandle(active).replace(/[^a-z0-9_-]/gi, "").slice(0, 32) || "agent";
           const prefixExample = `Message from 🤖 ${senderName} (@${safeHandle}): `;
           const note = "\n\n[@mention handoff — for each mentioned agent (" + mentioned.map(botHandle).join(", ") + "): COMPOSE a message from you (" + senderName + ") to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n" + mentioned.map(
-            (n) => "`hermes -p " + n + " chat --in ~ -c 'Bot Chat' -Q -q " + shellQuote(prefixExample + "<your composed message>") + "`"
+            (n) => "`hermes -p " + n + " chat --in ~ -c 'Bot Chat' -Q -q " + shellQuote2(prefixExample + "<your composed message>") + "`"
           ).join("\n") + '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. If it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. Relay the reply back to the user, attributed to that agent.]';
           return { ...draft, text: text + note };
         }
