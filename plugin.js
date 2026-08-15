@@ -149,7 +149,7 @@ function handleSessionsGatewayTransition() {
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({})
 
-function saveBotMeta(name, patch) {
+async function saveBotMeta(name, patch) {
   const prevMeta = $botMeta.get()[name] || {}
   const next = { ...$botMeta.get(), [name]: { ...prevMeta, ...patch } }
   $botMeta.set(next)
@@ -163,18 +163,18 @@ function saveBotMeta(name, patch) {
 
   // Server-side (source of truth when supported): profile.yaml ui_meta,
   // namespaced under this plugin's id — every client machine sees the same
-  // roster. Older gateways reject the param shape; that's fine, local wins.
-  // Data-URL fields are stripped from ui_meta (64KB cap, rides every
-  // profiles.list); the avatar IMAGE goes to the profile asset store
-  // instead (profiles.set_asset), which is server-side and uncapped by the
-  // list call — so pfps follow the profile across machines too.
+  // roster. Return the outcome so user-initiated saves can distinguish a
+  // cross-machine save from a local-only fallback instead of reporting a
+  // false success. Data-URL fields are stripped from ui_meta (64KB cap,
+  // rides every profiles.list); the avatar IMAGE goes to the profile asset
+  // store instead (profiles.set_asset), which is server-side and uncapped by
+  // the list call — so pfps follow the profile across machines too.
+  let serverRequest = null
   try {
     const { image, pet, ...rest } = next[name] || {}
-    host
-      .request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } })
-      .catch(() => undefined)
+    serverRequest = Promise.resolve(host.request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } }))
   } catch {
-    /* older gateway */
+    /* older/unavailable gateway — the local fallback remains saved */
   }
 
   // Avatar image → profile asset store (feature-detected; local storage
@@ -193,6 +193,31 @@ function saveBotMeta(name, patch) {
       /* older gateway */
     }
   }
+
+  // Three-way outcome so callers can tell a REAL remote failure from the
+  // documented legacy fallback ("older gateways reject the param shape;
+  // that's fine, local wins"):
+  //   'persisted'   — gateway confirmed applied.ui_meta === true
+  //   'unsupported' — older gateway: request rejected, or response carries
+  //                   no `applied` contract at all. Silent local fallback;
+  //                   an error toast here would fire on EVERY save forever.
+  //   'failed'      — gateway speaks the contract and explicitly reported
+  //                   the ui_meta write did NOT apply.
+  let serverOutcome = 'unsupported'
+  if (serverRequest) {
+    try {
+      const result = await serverRequest
+      if (result?.applied?.ui_meta === true) {
+        serverOutcome = 'persisted'
+      } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
+        serverOutcome = 'failed'
+      }
+    } catch {
+      /* older/unavailable gateway — the local fallback remains saved */
+    }
+  }
+
+  return { serverPersisted: serverOutcome === 'persisted', serverOutcome }
 }
 
 /** Flip the "hide Bot Chats from the sidebar" pref, persist it, and reconcile
@@ -3451,7 +3476,7 @@ function EditProfileDialog({ bot, open, onClose }) {
 
     setBusy(true)
     let advancedFailed = false
-    saveBotMeta(bot.name, {
+    const persistence = await saveBotMeta(bot.name, {
       shape,
       color,
       image,
@@ -3459,6 +3484,17 @@ function EditProfileDialog({ bot, open, onClose }) {
       title: title.trim(),
       custom: true
     })
+    // Only an explicit remote failure is an error — 'unsupported' is the
+    // documented older-gateway fallback (local wins, silently), and toasting
+    // it would flag every save on every legacy setup forever.
+    const lookFailed = persistence.serverOutcome === 'failed'
+
+    if (lookFailed) {
+      host.notify({ kind: 'error', message: 'Saved look locally; remote persistence failed' })
+    }
+    if (persistence.serverOutcome === 'persisted') {
+      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+    }
 
     const desc = description.trim()
     if (desc !== (bot.description || '').trim()) {
@@ -3487,7 +3523,7 @@ function EditProfileDialog({ bot, open, onClose }) {
       }
     }
 
-    if (!advancedFailed) {
+    if (!advancedFailed && !lookFailed) {
       host.notify({ kind: 'success', message: `${displayName(bot, { title })} updated` })
     }
     setBusy(false)
