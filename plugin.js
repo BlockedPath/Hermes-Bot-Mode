@@ -966,10 +966,25 @@ function startFaceClock() {
 
   window.__hbFaceClock = true
   const t0 = performance.now()
+  // The shadow-root walk over the whole document is the expensive part —
+  // do it at ~1Hz and paint the cached list per frame. Skip paints while
+  // the window is hidden; rAF is throttled there anyway, but be explicit.
+  let faces = []
+  let lastScan = -Infinity
 
   const tick = now => {
-    const t = (now - t0) / 1000
-    walkMathFaces(document, []).forEach(svg => paintMathFace(svg, t))
+    if (!document.hidden) {
+      if (now - lastScan > 1000) {
+        faces = walkMathFaces(document, [])
+        lastScan = now
+      }
+      const t = (now - t0) / 1000
+      for (const svg of faces) {
+        if (svg.isConnected) {
+          paintMathFace(svg, t)
+        }
+      }
+    }
     window.requestAnimationFrame(tick)
   }
 
@@ -989,6 +1004,26 @@ function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle'
       alt: '',
       'aria-hidden': true,
       style: { width: size, height: size, borderRadius: '22%', objectFit: 'cover', display: 'block' }
+    })
+  }
+
+  // Sigils are line art (no filled body) — the math clock rebuilds filled
+  // outlines, which would turn a stored sigil pick into a blank circle.
+  // Keep the legacy static render for them so old picks still draw.
+  if (shape.startsWith('sigil-')) {
+    const eyes = jsxs('g', {
+      children: [
+        jsx('circle', { cx: 16, cy: 14, r: 2.4, fill: color }),
+        jsx('circle', { cx: 24, cy: 14, r: 2.4, fill: color })
+      ]
+    })
+    return jsxs('svg', {
+      'data-bot-face': name,
+      viewBox: '0 0 40 40',
+      width: size,
+      height: size,
+      'aria-hidden': true,
+      children: [shapeNode(shape, color, name), eyes]
     })
   }
 
@@ -2170,7 +2205,10 @@ function BotRow({ bot, onDelete, onEdit }) {
   const photo = Boolean(image && !isBackfilledFacePng(image))
   const gatewayState = useValue(host.state.gateway)
   const activeNow = Boolean(last?.last_active && Date.now() / 1000 - last.last_active < ACTIVE_WINDOW_S)
-  const botMood = isActive || activeNow || gatewayState === 'busy' ? 'work' : 'idle'
+  // Work pose only when this bot is actually doing something: the active
+  // profile while the gateway is busy, or a bot that wrote within the
+  // liveness window. Not every bot whenever the gateway is busy.
+  const botMood = (isActive && gatewayState === 'busy') || activeNow ? 'work' : 'idle'
   const unread = Boolean(useValue($botUnread)[bot.name])
   // Human-readable session context: WHICH chat the preview belongs to, WHO
   // sent the last message (bot-to-bot DM vs human), and whether the bot is
