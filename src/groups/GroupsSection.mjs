@@ -365,11 +365,24 @@ export function GroupsSection({ roster }) {
                 const sid = m[1];
                 try {
                   const rn = await host.request("cli.exec", {
-                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`],
+                    argv: [
+                      "-p",
+                      cmd.targetAgent,
+                      "sessions",
+                      "rename",
+                      sid,
+                      `[Room: ${group.name}]`,
+                    ],
                   });
-                  console.log(`[Groups] renamed ${sid} to [Room: ${group.name}] for ${cmd.targetAgent}`, rn);
+                  console.log(
+                    `[Groups] renamed ${sid} to [Room: ${group.name}] for ${cmd.targetAgent}`,
+                    rn,
+                  );
                 } catch (eRn) {
-                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
+                  console.warn(
+                    `[Groups] rename failed for ${cmd.targetAgent}:`,
+                    eRn?.message || eRn,
+                  );
                 }
               }
             } else
