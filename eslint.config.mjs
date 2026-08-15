@@ -1,35 +1,41 @@
 import js from "@eslint/js";
+import globals from "globals";
 
 export default [
+  {
+    ignores: ["node_modules/**", "docs/**", "*.watch.mjs"],
+  },
   js.configs.recommended,
   {
+    files: ["**/*.js", "**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
       globals: {
-        console: "readonly",
-        window: "readonly",
-        document: "readonly",
-        Image: "readonly",
-        XMLSerializer: "readonly",
-        createImageBitmap: "readonly",
-        fetch: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly",
-        setInterval: "readonly",
-        clearInterval: "readonly",
+        ...globals.browser,
+        ...globals.es2022,
       },
     },
     rules: {
       "no-unused-vars": [
-        "warn",
-        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          // `const { chat_pin, ...rest } = entry` is the omit-a-key idiom; the
+          // named bindings are intentionally discarded, not dead code.
+          ignoreRestSiblings: true,
+        },
       ],
       "no-undef": "error",
       "no-console": "off",
     },
   },
   {
-    ignores: ["node_modules/**", "docs/**"],
+    // groups.mjs, lib/, and tests are Node, not browser.
+    files: ["groups.mjs", "lib/**/*.mjs", "tests/**/*.mjs"],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
   },
 ];
