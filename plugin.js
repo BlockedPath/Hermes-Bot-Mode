@@ -3577,15 +3577,20 @@ function isLegacyDelegatedRoutine(job) {
   return Boolean(routineBot(job) && typeof preview === 'string' && preview.startsWith(LEGACY_DELEGATED_ROUTINE_PREFIX))
 }
 
-async function loadRoutines() {
-  const data = await host.request('cron.manage', { action: 'list', include_disabled: true })
+async function loadRoutines(profile) {
+  // profile scopes cron.manage to that bot's own cron store (core RPC gained an
+  // optional `profile` param). Older gateways ignore the unknown param and
+  // return the launch-profile store — the [bot:] tag filter in selectRoutineJobs
+  // remains the graceful fallback there.
+  const scope = profile ? { profile } : {}
+  const data = await host.request('cron.manage', { action: 'list', include_disabled: true, ...scope })
   const jobs = Array.isArray(data?.jobs) ? data.jobs : []
   const activeLegacyJobs = jobs.filter(
     job => isLegacyDelegatedRoutine(job) && job.enabled !== false && job.state !== 'paused'
   )
 
   await Promise.all(
-    activeLegacyJobs.map(job => host.request('cron.manage', { action: 'pause', name: job.job_id }))
+    activeLegacyJobs.map(job => host.request('cron.manage', { action: 'pause', name: job.job_id, ...scope }))
   )
 
   if (!activeLegacyJobs.length) {
@@ -3599,10 +3604,10 @@ async function loadRoutines() {
   }
 }
 
-function useRoutines() {
+function useRoutines(profile) {
   return useQuery({
-    queryKey: ROUTINES_KEY,
-    queryFn: loadRoutines,
+    queryKey: [...ROUTINES_KEY, profile || ''],
+    queryFn: () => loadRoutines(profile),
     refetchInterval: 20000,
     staleTime: 8000
   })
@@ -3685,7 +3690,7 @@ function scheduleLabel(schedule) {
   return schedule || ''
 }
 
-function RoutineRow({ job, onChanged }) {
+function RoutineRow({ job, onChanged, profile }) {
   const [busy, setBusy] = useState(false)
   // Optimistic overlay: null = trust server state. Set immediately on
   // toggle so the switch responds even before the refetch lands.
@@ -3710,7 +3715,7 @@ function RoutineRow({ job, onChanged }) {
     }
 
     try {
-      await host.request('cron.manage', { action, name: job.job_id })
+      await host.request('cron.manage', { action, name: job.job_id, ...(profile ? { profile } : {}) })
       onChanged()
     } catch (err) {
       setPendingActive(null)
@@ -4030,6 +4035,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         name: `[bot:${bot}] ${title}`,
         schedule: schedule.trim(),
         prompt: routinePrompt(bot, title, task, activeProfile),
+        ...(bot ? { profile: bot } : {}),
         ...(repeatN ? { repeat: repeatN } : {})
       })
       queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
@@ -4123,7 +4129,7 @@ function RoutinesPane() {
   const bot = (gatewayProfile || selected || 'default').trim() || 'default'
   const meta = useValue($botMeta)[bot]
   const { shape, color, image } = botAppearance(bot, meta)
-  const { data, error, isLoading, refetch } = useRoutines()
+  const { data, error, isLoading, refetch } = useRoutines(bot)
   const [createOpen, setCreateOpen] = useState(false)
   const view = selectRoutineJobs(data, error, $lastJobs.get(), bot)
   if (view.live) {
@@ -4227,7 +4233,7 @@ function RoutinesPane() {
               className: 'min-h-0 flex-1',
               children: jsx('div', {
                 className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, onChanged: () => void refetch() }, job.job_id))
+                children: jobs.map(job => jsx(RoutineRow, { job, profile: bot, onChanged: () => void refetch() }, job.job_id))
               })
             }),
       jsx(CreateRoutineDialog, {
