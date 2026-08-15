@@ -51,6 +51,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SkillsView,
   Switch,
   Textarea,
   Tip,
@@ -2806,6 +2807,41 @@ function AdvancedProfileConfig({ bot, state, setState }) {
   const mcpList = state.mcp || []
   const enabledMcp = mcpList.filter(m => m.enabled).length
 
+  // Newer desktop builds export the WHOLE core Capabilities surface
+  // (hermes-agent#87317): Skills (installed list + one-click hub installs +
+  // full-skill detail), Tools (per-toolset config), and MCP — pinned to this
+  // bot via fixedProfile, tab state kept out of the page router via embedded.
+  // Render THAT instead of the checkbox stand-ins; writes go straight to the
+  // bot's backend, so the dirty-section staging below only carries
+  // model + SOUL on these builds. Older builds keep the full checklist UI.
+  if (SkillsView) {
+    return jsxs('div', {
+      className: 'grid gap-4',
+      children: [
+        jsx(ModelPicker, {
+          value: { provider: state.provider, model: state.model },
+          onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
+        }),
+        labeled(
+          'Capabilities (applies immediately — skills, tools, MCP)',
+          jsx('div', {
+            className: 'overflow-hidden rounded-md border border-(--ui-stroke-secondary)',
+            style: { height: 460, minHeight: 300, resize: 'vertical', overflow: 'auto' },
+            children: jsx(SkillsView, { embedded: true, fixedProfile: bot })
+          })
+        ),
+        labeled(
+          'SOUL.md (persona + agent-messaging protocol)',
+          jsx(Textarea, {
+            className: 'min-h-28 font-mono text-xs leading-5',
+            value: state.soul,
+            onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
+          })
+        )
+      ]
+    })
+  }
+
   return jsxs('div', {
     className: 'grid gap-4',
     children: [
@@ -3487,6 +3523,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
   const [noSkills, setNoSkills] = useState(false)
   const [shareAuth, setShareAuth] = useState(true)
   const [advTab, setAdvTab] = useState('general')
+  // Set once ensureAgentCreated() materializes the profile for the live
+  // Capabilities tab (SkillsView needs a real backend to point at). State —
+  // not just createdRef — because the render must flip when it lands.
+  const [createdForCaps, setCreatedForCaps] = useState(null)
   const [caps, setCaps] = useState(null)
   const [capsFailed, setCapsFailed] = useState(false)
   const [dirtyCaps, setDirtyCaps] = useState({ skills: false, toolsets: false, mcp: false })
@@ -3513,6 +3553,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setNoSkills(false)
     setShareAuth(true)
     setAdvTab('general')
+    setCreatedForCaps(null)
     setCaps(null)
     setCapsFailed(false)
     setDirtyCaps({ skills: false, toolsets: false, mcp: false })
@@ -3764,12 +3805,20 @@ function CreateAgentDialog({ open, onClose, roster }) {
                   children: [
                     jsx('div', {
                       className: 'flex gap-1',
-                      children: [
-                        ['general', 'General'],
-                        ['skills', 'Skills'],
-                        ['toolsets', 'Tools'],
-                        ['mcp', 'MCP']
-                      ].map(([id, label]) =>
+                      // Newer desktops export the whole Capabilities surface —
+                      // one live tab replaces the three staged checklists.
+                      children: (SkillsView
+                        ? [
+                            ['general', 'General'],
+                            ['capabilities', 'Capabilities']
+                          ]
+                        : [
+                            ['general', 'General'],
+                            ['skills', 'Skills'],
+                            ['toolsets', 'Tools'],
+                            ['mcp', 'MCP']
+                          ]
+                      ).map(([id, label]) =>
                         jsx(
                           'button',
                           {
@@ -3783,7 +3832,14 @@ function CreateAgentDialog({ open, onClose, roster }) {
                             onClick: () => {
                               setAdvTab(id)
                               setCapFilter('')
-                              if (id !== 'general') {
+                              if (id === 'capabilities') {
+                                // The live surface needs a real profile —
+                                // materialize it now (same lazy-create door
+                                // the MCP setup buttons use).
+                                void ensureAgentCreated()
+                                  .then(created => created && setCreatedForCaps(created))
+                                  .catch(err => host.notifyError(err, 'Could not create the profile yet'))
+                              } else if (id !== 'general') {
                                 ensureCaps()
                               }
                             },
@@ -3872,6 +3928,31 @@ function CreateAgentDialog({ open, onClose, roster }) {
                             })
                           ]
                         })
+                      : advTab === 'capabilities'
+                        ? !valid || taken
+                          ? jsx('div', {
+                              className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                              children: taken
+                                ? 'That name is taken — pick another before configuring capabilities.'
+                                : 'Name the agent first — the profile is created when you open this tab.'
+                            })
+                          : !createdForCaps
+                            ? jsx('div', {
+                                className: 'flex justify-center py-4',
+                                children: jsx(GlyphSpinner, {
+                                  spinner: 'breathe',
+                                  className: 'text-(--ui-text-tertiary)'
+                                })
+                              })
+                            : jsx('div', {
+                                className: 'overflow-hidden rounded-md border border-(--ui-stroke-secondary)',
+                                style: { height: 440, minHeight: 280, resize: 'vertical', overflow: 'auto' },
+                                // The REAL core Capabilities surface (skills +
+                                // one-click hub installs + tools + MCP), pinned
+                                // to the just-created profile. Writes land
+                                // immediately — no staging needed.
+                                children: jsx(SkillsView, { embedded: true, fixedProfile: createdForCaps })
+                              })
                       : capsFailed
                         ? jsx('div', {
                             className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
