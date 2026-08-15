@@ -44,6 +44,7 @@ import {
   queryClient,
   relativeTime,
   ScrollArea,
+  SearchField,
   Select,
   SelectContent,
   SelectItem,
@@ -1627,6 +1628,24 @@ function displayName(bot, meta) {
 
   const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()
   return raw.replace(/\b\w/g, ch => ch.toUpperCase())
+}
+
+/** Filter by the two stable identities rendered in every roster row: the
+ * customizable display name and the profile's @handle. Keep the current
+ * activity order — search narrows the roster, it never re-ranks it. */
+function filterBots(roster, metaByName, query) {
+  const needle = query.trim().toLowerCase().replace(/^@/, '')
+
+  if (!needle) {
+    return roster
+  }
+
+  return roster.filter(bot => {
+    const display = displayName(bot, metaByName[bot.name]).toLowerCase()
+    const profile = (bot.name || '').toLowerCase()
+    const handle = botHandle(bot.name).toLowerCase()
+    return display.includes(needle) || profile.includes(needle) || handle.includes(needle)
+  })
 }
 
 function slugify(value) {
@@ -4034,6 +4053,7 @@ function BotsPane() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [query, setQuery] = useState('')
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -4042,7 +4062,7 @@ function BotsPane() {
       void refetch()
     }
   }, [gatewayUp, refetch])
-  const allMeta = $botMeta.get()
+  const allMeta = useValue($botMeta)
   // Messaging-app order: most recent activity first, where "activity" is
   // the newest of (bot created, last message in any of its sessions). A
   // freshly created bot tops the list until another bot gets a message.
@@ -4073,6 +4093,7 @@ function BotsPane() {
 
     return activityOf(b) - activityOf(a)
   })
+  const filteredRoster = filterBots(roster, allMeta, query)
 
   if (live) {
     $lastRoster.set(roster)
@@ -4107,6 +4128,19 @@ function BotsPane() {
           })
         ]
       }),
+      roster.length
+        ? jsx('div', {
+            className: 'px-2.5 pb-1.5',
+            children: jsx(SearchField, {
+              'aria-label': 'Search bots',
+              containerClassName: 'w-full',
+              inputClassName: 'w-full',
+              placeholder: 'Search bots…',
+              value: query,
+              onChange: setQuery
+            })
+          })
+        : null,
       staleNotice
         ? jsx('div', {
             className: 'mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
@@ -4142,15 +4176,23 @@ function BotsPane() {
                 title: 'No agents yet',
                 description: 'Create your first teammate.'
               })
-            : jsx(ScrollArea, {
-                className: 'hermes-bots-roster min-h-0 flex-1',
-                children: jsx('div', {
-                  className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                  children: roster.map(bot =>
-                    jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing }, bot.name)
-                  )
+            : filteredRoster.length === 0
+              ? jsx('div', {
+                  'aria-live': 'polite',
+                  className:
+                    'flex flex-1 items-center justify-center px-4 text-center text-xs text-(--ui-text-tertiary)',
+                  role: 'status',
+                  children: `No bots match “${query.trim()}”`
                 })
-              }),
+              : jsx(ScrollArea, {
+                  className: 'hermes-bots-roster min-h-0 flex-1',
+                  children: jsx('div', {
+                    className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
+                    children: filteredRoster.map(bot =>
+                      jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing }, bot.name)
+                    )
+                  })
+                }),
       jsx('div', {
         className: 'border-t border-(--ui-stroke-secondary) p-2',
         children: jsxs(Button, {
