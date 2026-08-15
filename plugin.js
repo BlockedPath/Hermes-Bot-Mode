@@ -193,6 +193,14 @@ function createGroup({ name, memberIds, description }) {
 function getGroup(id) {
   return $groups.get().find((g) => g.id === id) || null;
 }
+function deleteGroup(id) {
+  const groups = $groups.get();
+  const idx = groups.findIndex((g) => g.id === id);
+  if (idx === -1) throw new Error(`Group ${id} not found`);
+  const deleted = groups[idx];
+  const next = groups.filter((g) => g.id !== id);
+  return { deleted, next };
+}
 function postToGroup({ groupId, senderName, content }) {
   const groups = $groups.get();
   const idx = groups.findIndex((g) => g.id === groupId);
@@ -331,13 +339,14 @@ function CreateGroupDialog({ open, onClose, roster }) {
     })
   });
 }
-function GroupRow({ group, onPost, expandAll }) {
+function GroupRow({ group, onPost, onDelete, expandAll }) {
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (expandAll !== void 0) setExpanded(expandAll);
   }, [expandAll]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const lastMsg = group.room && group.room.length ? group.room[group.room.length - 1] : null;
   const preview = lastMsg ? `${lastMsg.senderName}: ${String(lastMsg.content).slice(0, 60)}` : `${group.memberIds.length} members — no messages yet`;
   const handleSend = async () => {
@@ -428,7 +437,57 @@ function GroupRow({ group, onPost, expandAll }) {
                 children: sending ? "Sending…" : "Send"
               })
             ]
-          })
+          }),
+          jsxs("div", {
+            className: "flex justify-end pt-1",
+            children: [
+              jsx(Button, {
+                variant: "ghost",
+                size: "sm",
+                className: "text-destructive hover:text-destructive",
+                onClick: () => setConfirmDelete(true),
+                children: "Delete group"
+              })
+            ]
+          }),
+          confirmDelete ? jsx(Dialog, {
+            open: true,
+            onOpenChange: (o) => !o && setConfirmDelete(false),
+            children: jsx(DialogContent, {
+              children: jsxs("div", {
+                className: "grid gap-4",
+                children: [
+                  jsx(DialogHeader, {
+                    children: jsx(DialogTitle, {
+                      children: `Delete "${group.name}"?`
+                    })
+                  }),
+                  jsx("div", {
+                    className: "text-sm text-muted-foreground",
+                    children: "This will remove the group and its transcript. This cannot be undone."
+                  }),
+                  jsxs("div", {
+                    className: "flex justify-end gap-2",
+                    children: [
+                      jsx(Button, {
+                        variant: "ghost",
+                        onClick: () => setConfirmDelete(false),
+                        children: "Cancel"
+                      }),
+                      jsx(Button, {
+                        variant: "destructive",
+                        onClick: () => {
+                          setConfirmDelete(false);
+                          onDelete(group.id);
+                        },
+                        children: "Delete"
+                      })
+                    ]
+                  })
+                ]
+              })
+            })
+          }) : null
         ]
       }) : null
     ]
@@ -633,6 +692,20 @@ function GroupsSection({ roster }) {
       }
     }
   };
+  const handleDelete = (groupId) => {
+    try {
+      const { deleted, next } = deleteGroup(groupId);
+      persistGroups(pluginCtxRef, next);
+      host.notify({
+        kind: "success",
+        message: `Group "${deleted.name}" deleted`
+      });
+      console.log("[Groups] deleted", deleted);
+    } catch (e) {
+      console.error("[Groups] delete failed", e);
+      host.notify({ kind: "error", message: e?.message || String(e) });
+    }
+  };
   return jsxs("div", {
     className: "border-t border-(--ui-stroke-secondary) p-2",
     children: [
@@ -672,7 +745,16 @@ function GroupsSection({ roster }) {
       }) : jsx("div", {
         className: "grid gap-2",
         children: groups.map(
-          (g) => jsx(GroupRow, { group: g, onPost: handlePost, expandAll }, g.id)
+          (g) => jsx(
+            GroupRow,
+            {
+              group: g,
+              onPost: handlePost,
+              onDelete: handleDelete,
+              expandAll
+            },
+            g.id
+          )
         )
       }),
       jsx(CreateGroupDialog, {
