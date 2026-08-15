@@ -12,6 +12,7 @@ function loadCanonicalRecovery({ openSession, request }) {
   const context = {
     host: { openSession, request },
     saveBotMeta: (name, patch) => saved.push({ name, patch }),
+    $hideBotChats: { get: () => false },
     window: { setTimeout: callback => callback() }
   }
   const section = source

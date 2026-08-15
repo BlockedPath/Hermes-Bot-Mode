@@ -118,6 +118,14 @@ function trackInboundActivity(roster) {
 /** Last good cron list, same idea as the roster snapshot. */
 const $lastJobs = atom([])
 
+/** User pref: hide canonical "Bot Chat" sessions from the global Sessions
+ *  sidebar (they always remain in the Bots roster). Persisted via ctx.storage.
+ *  Default ON — Bot Chats are plugin-owned forever-chats, not scratch sessions,
+ *  so keeping them out of the shared recents list is the expected behavior.
+ *  Backed by the core generic `hidden` session flag (session.create hidden:true
+ *  / session.set_hidden); older gateways ignore it and Bot Chats stay visible. */
+const $hideBotChats = atom(true)
+
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
  *  (the bot you're actually chatting with) and roster clicks. */
 const $selectedBot = atom('default')
@@ -165,6 +173,31 @@ function saveBotMeta(name, patch) {
       /* older gateway */
     }
   }
+}
+
+/** Flip the "hide Bot Chats from the sidebar" pref, persist it, and reconcile
+ *  every known canonical chat via the core session.set_hidden RPC so the change
+ *  applies to already-created Bot Chats (not just future ones). Feature-detected:
+ *  older gateways lack session.set_hidden and simply keep the chats visible. */
+async function setHideBotChats(hidden) {
+  $hideBotChats.set(hidden)
+
+  try {
+    Promise.resolve(pluginCtx?.storage?.set?.('hide-bot-chats', hidden)).catch(() => undefined)
+  } catch {
+    /* storage unavailable — pref holds for this window only */
+  }
+
+  const meta = $botMeta.get()
+  const ids = Object.values(meta)
+    .map(m => m && m.chat)
+    .filter(Boolean)
+
+  await Promise.all(
+    ids.map(sid =>
+      Promise.resolve(host.request('session.set_hidden', { session_id: sid, hidden })).catch(() => undefined)
+    )
+  )
 }
 
 /** Fetch server-side avatars for roster rows flagged has_avatar when the
@@ -1532,7 +1565,11 @@ function createCanonicalChat(name) {
   const run = (async () => {
     const res = await host.request('session.create', {
       profile: name,
-      title: 'Bot Chat'
+      title: 'Bot Chat',
+      // Born hidden from the global sidebar when the pref is on. Core applies
+      // this via the generic `hidden` flag (deferred as pending_hidden until the
+      // row exists); older gateways ignore the unknown param and it stays visible.
+      ...($hideBotChats.get() ? { hidden: true } : {})
     })
     const sid = res?.stored_session_id
     const runtime = res?.session_id
@@ -4257,6 +4294,7 @@ function BotsPane() {
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [query, setQuery] = useState('')
+  const hideBotChats = useValue($hideBotChats)
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
@@ -4319,15 +4357,30 @@ function BotsPane() {
             className: 'text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
             children: 'Bots'
           }),
-          jsx(Tip, {
-            label: 'New Agent',
-            children: jsx('button', {
-              type: 'button',
-              className:
-                'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-              onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: 'add' })
-            })
+          jsxs('div', {
+            className: 'flex items-center gap-0.5',
+            children: [
+              jsx(Tip, {
+                label: hideBotChats ? 'Bot Chats hidden from Sessions — click to show' : 'Bot Chats shown in Sessions — click to hide',
+                children: jsx('button', {
+                  type: 'button',
+                  className:
+                    'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                  onClick: () => void setHideBotChats(!hideBotChats),
+                  children: jsx(Codicon, { name: hideBotChats ? 'eye-closed' : 'eye' })
+                })
+              }),
+              jsx(Tip, {
+                label: 'New Agent',
+                children: jsx('button', {
+                  type: 'button',
+                  className:
+                    'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                  onClick: () => setCreateOpen(true),
+                  children: jsx(Codicon, { name: 'add' })
+                })
+              })
+            ]
           })
         ]
       }),
@@ -4485,6 +4538,19 @@ export default {
         .catch(() => undefined)
     } catch {
       /* no storage on this shell — defaults stay */
+    }
+
+    // Hydrate the "hide Bot Chats from the sidebar" pref (default ON).
+    try {
+      Promise.resolve(ctx.storage?.get?.('hide-bot-chats'))
+        .then(value => {
+          if (typeof value === 'boolean') {
+            $hideBotChats.set(value)
+          }
+        })
+        .catch(() => undefined)
+    } catch {
+      /* no storage — default (hide) stays */
     }
 
     // Routines follow the chat you're in: track the live gateway profile.
