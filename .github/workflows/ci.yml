@@ -33,6 +33,12 @@ jobs:
       - name: Install
         run: npm ci
 
+      # plugin.js is a committed build artifact (the desktop loader takes one
+      # flat file). Fail if it drifts from src/ instead of shipping a stale
+      # bundle that no longer matches the reviewed source.
+      - name: Build is up to date
+        run: npm run build:check
+
       - name: Lint
         run: npm run lint
 

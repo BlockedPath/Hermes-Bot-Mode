@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-const pluginSource = readFileSync(
-  new URL("../plugin.js", import.meta.url),
-  "utf8",
-);
+import { bundleSource, evaluateBundle } from "./helpers/load-bundle.mjs";
 
 function load() {
   const values = new Map();
@@ -29,19 +23,10 @@ function load() {
     },
     host: { state: { profile: { listen: () => undefined } } },
   };
-  const source = pluginSource
-    .replace(
-      /^import\s+\{[\s\S]*?\}\s+from ["']@hermes\/plugin-sdk["'].*\r?\n/m,
-      "",
-    )
-    .replace(/^import .* from ["']react["'].*\r?\n/m, "")
-    .replace(/^import .* from ["']react\/jsx-runtime["'].*\r?\n/m, "")
-    .replace("export default {", "globalThis.plugin = {")
-    .concat(
-      "\nglobalThis.__routines = { routinePrompt, normalizedProfileName };\n",
-    );
-  vm.runInNewContext(source, context, { filename: "plugin.js" });
-  return context;
+  return evaluateBundle(
+    context,
+    "globalThis.__routines = { routinePrompt, normalizedProfileName };",
+  );
 }
 
 test("unit: direct execution is selected for the active bot profile", () => {
@@ -72,7 +57,7 @@ test("integration: a different active profile retains the delegated routine wrap
 
 test("regression: Create Cronjob passes the active profile to routinePrompt", () => {
   assert.match(
-    pluginSource,
+    bundleSource,
     /prompt: routinePrompt\(bot, title, task, activeProfile\)/,
   );
   const { __routines } = load();
