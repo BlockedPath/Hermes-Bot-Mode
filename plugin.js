@@ -52,82 +52,107 @@ import {
   Textarea,
   Tip,
   useQuery,
-  useValue
-} from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
-import { jsx, jsxs } from 'react/jsx-runtime'
+  useValue,
+} from "@hermes/plugin-sdk";
+import { useEffect, useRef, useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
 
-const ID = 'hermes-bots'
-const ROSTER_KEY = [ID, 'roster']
-const ROUTINES_KEY = [ID, 'routines']
-const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const ID = "hermes-bots";
+const ROSTER_KEY = [ID, "roster"];
+const ROUTINES_KEY = [ID, "routines"];
+const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** Captured in register() so components can reach plugin storage. */
-let pluginCtx = null
+let pluginCtx = null;
 
 /** Live roster snapshot for imperative handlers (context menus). */
-const $lastRoster = atom([])
+const $lastRoster = atom([]);
 
 /** Bots with chat activity the user hasn't seen yet (name -> true).
  *  Fed by the roster poll's activity watermark, so it catches EVERY
  *  delivery path: RPC, CLI (bot-to-bot), cron runs, other machines. */
-const $botUnread = atom({})
+const $botUnread = atom({});
 
 // last_active watermark per bot, seeded on first poll so a fresh mount
 // doesn't mark ancient history unread.
-const rosterWatermarks = new Map()
-let watermarksSeeded = false
+const rosterWatermarks = new Map();
+let watermarksSeeded = false;
+
+function resetWatermarks() {
+  rosterWatermarks.clear();
+  watermarksSeeded = false;
+}
 
 /** Detect new inbound activity from a fresh roster: last_active moved past
  *  the watermark for a bot whose chat isn't on screen -> unread + toast. */
 function trackInboundActivity(roster) {
-  const seeding = !watermarksSeeded
-  watermarksSeeded = true
+  const seeding = !watermarksSeeded;
+  watermarksSeeded = true;
 
   for (const bot of roster) {
-    const ts = bot.last_session?.last_active || 0
-    const prev = rosterWatermarks.get(bot.name) || 0
-    rosterWatermarks.set(bot.name, Math.max(prev, ts))
+    const ts = bot.last_session?.last_active || 0;
+    const prev = rosterWatermarks.get(bot.name) || 0;
+    rosterWatermarks.set(bot.name, Math.max(prev, ts));
 
     if (seeding || ts <= prev) {
-      continue
+      continue;
     }
 
     // Activity in the bot the user is currently looking at is already
     // visible — never badge the open chat.
     if ($selectedBot.get() === bot.name) {
-      continue
+      continue;
     }
 
-    const meta = $botMeta.get()[bot.name]
-    const label = displayName(bot, meta)
-    const preview = (bot.last_session?.preview || '').trim()
-    const inbound = /^Message from/i.test(preview)
+    const meta = $botMeta.get()[bot.name];
+    const label = displayName(bot, meta);
+    const preview = (bot.last_session?.preview || "").trim();
+    const inbound = /^Message from/i.test(preview);
 
-    $botUnread.set({ ...$botUnread.get(), [bot.name]: true })
+    $botUnread.set({ ...$botUnread.get(), [bot.name]: true });
     host.notify({
-      kind: 'info',
-      title: inbound ? `\uD83E\uDD16 New message for ${label}` : `${label} has new activity`,
-      message: preview.slice(0, 140) || 'Open the chat to see it.'
-    })
+      kind: "info",
+      title: inbound
+        ? `\uD83E\uDD16 New message for ${label}`
+        : `${label} has new activity`,
+      message: preview.slice(0, 140) || "Open the chat to see it.",
+    });
   }
 }
 
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
  *  (the bot you're actually chatting with) and roster clicks. */
-const $selectedBot = atom('default')
+const $selectedBot = atom("default");
 
 /** Per-bot appearance + display meta, persisted via ctx.storage:
  *  { [botName]: { shape, color, title } } */
-const $botMeta = atom({})
+const $botMeta = atom({});
+
+function migrateChatPin(entry) {
+  if (!entry || typeof entry !== "object") return entry;
+  if (entry.chat_pin && !entry.chat) {
+    const { chat_pin, ...rest } = entry;
+    return { ...rest, chat: chat_pin };
+  }
+  if (entry.chat_pin && entry.chat) {
+    const { chat_pin, ...rest } = entry;
+    return rest;
+  }
+  return entry;
+}
 
 function saveBotMeta(name, patch) {
-  const next = { ...$botMeta.get(), [name]: { ...($botMeta.get()[name] || {}), ...patch } }
-  $botMeta.set(next)
+  const base = $botMeta.get()[name] || {};
+  const merged = { ...base, ...patch };
+  const migrated = migrateChatPin(merged);
+  const next = { ...$botMeta.get(), [name]: migrated };
+  $botMeta.set(next);
 
   // Local plugin storage: instant, and the fallback for older gateways.
   try {
-    Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', next)).catch(() => undefined)
+    Promise.resolve(pluginCtx?.storage?.set?.("bot-meta", next)).catch(
+      () => undefined,
+    );
   } catch {
     /* storage unavailable — look persists for this window only */
   }
@@ -140,22 +165,30 @@ function saveBotMeta(name, patch) {
   // instead (profiles.set_asset), which is server-side and uncapped by the
   // list call — so pfps follow the profile across machines too.
   try {
-    const { image, pet, ...rest } = next[name] || {}
+    const { image, pet, ...rest } = next[name] || {};
     host
-      .request('profiles.configure', { name, ui_meta: { 'hermes-bots': rest } })
-      .catch(() => undefined)
+      .request("profiles.configure", { name, ui_meta: { "hermes-bots": rest } })
+      .catch(() => undefined);
   } catch {
     /* older gateway */
   }
 
   // Avatar image → profile asset store (feature-detected; local storage
   // remains the fallback rendering source on older gateways).
-  if ('image' in patch) {
+  if ("image" in patch) {
     try {
       const req = patch.image
-        ? host.request('profiles.set_asset', { name, asset: 'avatar', data: patch.image })
-        : host.request('profiles.set_asset', { name, asset: 'avatar', clear: true })
-      req.catch(() => undefined)
+        ? host.request("profiles.set_asset", {
+            name,
+            asset: "avatar",
+            data: patch.image,
+          })
+        : host.request("profiles.set_asset", {
+            name,
+            asset: "avatar",
+            clear: true,
+          });
+      req.catch(() => undefined);
     } catch {
       /* older gateway */
     }
@@ -164,9 +197,9 @@ function saveBotMeta(name, patch) {
 
 /** Fetch server-side avatars for roster rows flagged has_avatar when the
  *  local cache doesn't already have an image for them. Fire-and-forget. */
-const avatarFetchInflight = new Set()
+const avatarFetchInflight = new Set();
 
-const avatarPushInflight = new Set()
+const avatarPushInflight = new Set();
 
 /** Backfill: local meta has art the server lacks -> profiles.set_asset.
  *  Server-side avatars power the inter-agent notice pfp (core #85855) and
@@ -174,102 +207,126 @@ const avatarPushInflight = new Set()
 function pushLocalAvatars(roster) {
   for (const bot of roster) {
     if (bot.has_avatar || avatarPushInflight.has(bot.name)) {
-      continue
+      continue;
     }
 
-    const image = $botMeta.get()[bot.name]?.image
+    const image = $botMeta.get()[bot.name]?.image;
 
-    if (image && typeof image === 'string' && image.startsWith('data:')) {
-      avatarPushInflight.add(bot.name)
+    if (image && typeof image === "string" && image.startsWith("data:")) {
+      avatarPushInflight.add(bot.name);
       host
-        .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: image })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
-        .catch(() => avatarPushInflight.delete(bot.name))
-      continue
+        .request("profiles.set_asset", {
+          name: bot.name,
+          asset: "avatar",
+          data: image,
+        })
+        .then(() =>
+          queryClient.invalidateQueries({
+            queryKey: ["hermes-bots", "roster"],
+          }),
+        )
+        .catch(() => avatarPushInflight.delete(bot.name));
+      continue;
     }
 
     // Vector shape/color face: no image exists anywhere — rasterize the
     // live SVG (tagged data-bot-face) to a PNG and push that, so the
     // inter-agent notices (core #85855/#85888) can show the real pfp.
-    const svg = document.querySelector('svg[data-bot-face=' + JSON.stringify(bot.name) + ']')
+    const svg = document.querySelector(
+      "svg[data-bot-face=" + JSON.stringify(bot.name) + "]",
+    );
 
     if (!svg) {
-      continue
+      continue;
     }
 
-    avatarPushInflight.add(bot.name)
+    avatarPushInflight.add(bot.name);
     rasterizeSvgToPng(svg, 160)
-      .then(png =>
+      .then((png) =>
         png
           ? host
-              .request('profiles.set_asset', { name: bot.name, asset: 'avatar', data: png })
-              .then(() => queryClient.invalidateQueries({ queryKey: ['hermes-bots', 'roster'] }))
-          : Promise.reject(new Error('rasterize failed'))
+              .request("profiles.set_asset", {
+                name: bot.name,
+                asset: "avatar",
+                data: png,
+              })
+              .then(() =>
+                queryClient.invalidateQueries({
+                  queryKey: ["hermes-bots", "roster"],
+                }),
+              )
+          : Promise.reject(new Error("rasterize failed")),
       )
-      .catch(() => avatarPushInflight.delete(bot.name))
+      .catch(() => avatarPushInflight.delete(bot.name));
   }
 }
 
 /** Serialize an inline SVG and draw it to a canvas -> PNG data URL. */
 function rasterizeSvgToPng(svgEl, size) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     try {
-      const clone = svgEl.cloneNode(true)
-      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-      clone.setAttribute('width', String(size))
-      clone.setAttribute('height', String(size))
-      const markup = new XMLSerializer().serializeToString(clone)
-      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup)
-      const img = new Image()
+      const clone = svgEl.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      clone.setAttribute("width", String(size));
+      clone.setAttribute("height", String(size));
+      const markup = new XMLSerializer().serializeToString(clone);
+      const url =
+        "data:image/svg+xml;charset=utf-8," + encodeURIComponent(markup);
+      const img = new Image();
 
       img.onload = () => {
         try {
-          const canvas = document.createElement('canvas')
-          canvas.width = size
-          canvas.height = size
-          canvas.getContext('2d').drawImage(img, 0, 0, size, size)
-          resolve(canvas.toDataURL('image/png'))
+          const canvas = document.createElement("canvas");
+          canvas.width = size;
+          canvas.height = size;
+          canvas.getContext("2d").drawImage(img, 0, 0, size, size);
+          resolve(canvas.toDataURL("image/png"));
         } catch {
-          resolve(null)
+          resolve(null);
         }
-      }
-      img.onerror = () => resolve(null)
-      img.src = url
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
     } catch {
-      resolve(null)
+      resolve(null);
     }
-  })
+  });
 }
 
 function pullServerAvatars(roster) {
-  pushLocalAvatars(roster)
+  pushLocalAvatars(roster);
 
   for (const bot of roster) {
     if (!bot.has_avatar || avatarFetchInflight.has(bot.name)) {
-      continue
+      continue;
     }
 
     if ($botMeta.get()[bot.name]?.image) {
-      continue
+      continue;
     }
 
-    avatarFetchInflight.add(bot.name)
+    avatarFetchInflight.add(bot.name);
     host
-      .request('profiles.get_asset', { name: bot.name, asset: 'avatar' })
-      .then(res => {
+      .request("profiles.get_asset", { name: bot.name, asset: "avatar" })
+      .then((res) => {
         if (res?.found && res.data) {
-          const current = $botMeta.get()
-          $botMeta.set({ ...current, [bot.name]: { ...(current[bot.name] || {}), image: res.data } })
+          const current = $botMeta.get();
+          $botMeta.set({
+            ...current,
+            [bot.name]: { ...(current[bot.name] || {}), image: res.data },
+          });
 
           try {
-            Promise.resolve(pluginCtx?.storage?.set?.('bot-meta', $botMeta.get())).catch(() => undefined)
+            Promise.resolve(
+              pluginCtx?.storage?.set?.("bot-meta", $botMeta.get()),
+            ).catch(() => undefined);
           } catch {
             /* no storage */
           }
         }
       })
       .catch(() => undefined)
-      .finally(() => avatarFetchInflight.delete(bot.name))
+      .finally(() => avatarFetchInflight.delete(bot.name));
   }
 }
 
@@ -279,71 +336,73 @@ function pullServerAvatars(roster) {
  *  naive replace would wipe a just-saved image avatar on the next roster
  *  paint. Local also fills gaps for older gateways. */
 function mergeServerMeta(roster) {
-  const local = $botMeta.get()
-  let changed = false
-  const next = { ...local }
+  const local = $botMeta.get();
+  let changed = false;
+  const next = { ...local };
 
   for (const bot of roster) {
-    const server = bot.ui_meta?.['hermes-bots']
-    if (server && typeof server === 'object') {
-      const mine = next[bot.name] || {}
-      const merged = { ...mine, ...server }
+    const rawServer = bot.ui_meta?.["hermes-bots"];
+    if (rawServer && typeof rawServer === "object") {
+      const server = migrateChatPin(rawServer);
+      const mine = next[bot.name] || {};
+      const mergedRaw = { ...mine, ...server };
+      const merged = migrateChatPin(mergedRaw);
 
       // Local-only fields survive the server overlay.
       if (mine.image) {
-        merged.image = mine.image
+        merged.image = mine.image;
       }
 
       if (JSON.stringify(next[bot.name] || null) !== JSON.stringify(merged)) {
-        next[bot.name] = merged
-        changed = true
+        next[bot.name] = merged;
+        changed = true;
       }
     }
   }
 
   if (changed) {
-    $botMeta.set(next)
+    $botMeta.set(next);
   }
 }
 
 /** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
  *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
 async function duplicateBot(bot, roster) {
-  const base = bot.name
-  let name = null
+  const base = bot.name;
+  let name = null;
   for (let n = 2; n < 100; n++) {
     // Truncate the BASE, never the suffix — slicing the joined string chops
     // the "-2" off a max-length name and the candidate collides with the
     // base forever (#19).
-    const suffix = `-${n}`
-    const candidate = base.slice(0, 64 - suffix.length) + suffix
-    if (!roster.some(b => b.name === candidate)) {
-      name = candidate
-      break
+    const suffix = `-${n}`;
+    const candidate = base.slice(0, 64 - suffix.length) + suffix;
+    if (!roster.some((b) => b.name === candidate)) {
+      name = candidate;
+      break;
     }
   }
 
   if (!name) {
-    throw new Error('No free name for the duplicate.')
+    throw new Error("No free name for the duplicate.");
   }
 
-  await host.request('profiles.create', {
+  await host.request("profiles.create", {
     name,
     clone_from: base,
-    description: bot.description || ''
-  })
+    description: bot.description || "",
+  });
 
   // Same look: avatar shape/color/image, pet, and a "(copy)" title so the
   // two are tellable apart in the roster until the user renames.
-  const meta = $botMeta.get()[base]
+  const meta = $botMeta.get()[base];
   if (meta) {
     saveBotMeta(name, {
       ...meta,
-      title: meta.title ? `${meta.title} (copy)` : ''
-    })
+      title: meta.title ? `${meta.title} (copy)` : "",
+    });
   }
 
-  return name
+  return name;
 }
 
 // ── avatars (shape + color + eyes) ──────────────────────────────────────────
@@ -354,32 +413,43 @@ async function duplicateBot(bot, roster) {
 // Radix ScrollArea's viewport wraps children in a display:table div that
 // sizes to content — unbounded width means `truncate` below it never fires
 // and previews run through the panel edge. Scope-limited corrective.
-if (typeof document !== 'undefined' && !document.getElementById('hermes-bots-roster-css')) {
-  const style = document.createElement('style')
-  style.id = 'hermes-bots-roster-css'
+if (
+  typeof document !== "undefined" &&
+  !document.getElementById("hermes-bots-roster-css")
+) {
+  const style = document.createElement("style");
+  style.id = "hermes-bots-roster-css";
   style.textContent =
-    '.hermes-bots-roster [data-radix-scroll-area-viewport] > div {' +
-    ' display: block !important; width: 100%; min-width: 0; }'
-  document.head.appendChild(style)
+    ".hermes-bots-roster [data-radix-scroll-area-viewport] > div {" +
+    " display: block !important; width: 100%; min-width: 0; }";
+  document.head.appendChild(style);
 }
 
-const AVATAR_SHAPES = ['circle', 'squircle', 'pill', 'triangle', 'hexagon', 'cloud', 'drop']
+const AVATAR_SHAPES = [
+  "circle",
+  "squircle",
+  "pill",
+  "triangle",
+  "hexagon",
+  "cloud",
+  "drop",
+];
 
 /** xorshift PRNG seeded from a string — stable across sessions/platforms. */
 function sigilRng(text) {
-  let h = 2166136261
+  let h = 2166136261;
   for (const ch of text) {
-    h ^= ch.charCodeAt(0)
-    h = Math.imul(h, 16777619)
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619);
   }
-  let state = h >>> 0 || 88675123
+  let state = h >>> 0 || 88675123;
   return () => {
-    state ^= state << 13
-    state ^= state >>> 17
-    state ^= state << 5
-    state >>>= 0
-    return state / 4294967296
-  }
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 4294967296;
+  };
 }
 
 /**
@@ -387,160 +457,219 @@ function sigilRng(text) {
  * mirrored right, plus a chance of a diamond ring. Returns SVG path strings.
  */
 function sigilGeometry(name, seed) {
-  const rng = sigilRng(`${name}::${seed}`)
-  const gx = i => 6 + i * 7 // 5 cols: 6..34
-  const gy = j => 8 + j * 6 // 5 rows: 8..32
-  const strokes = []
-  const segments = 4 + Math.floor(rng() * 3)
+  const rng = sigilRng(`${name}::${seed}`);
+  const gx = (i) => 6 + i * 7; // 5 cols: 6..34
+  const gy = (j) => 8 + j * 6; // 5 rows: 8..32
+  const strokes = [];
+  const segments = 4 + Math.floor(rng() * 3);
 
   for (let k = 0; k < segments; k++) {
-    const x1 = Math.floor(rng() * 3) // left half incl. center
-    const y1 = Math.floor(rng() * 5)
-    const x2 = Math.min(2, Math.max(0, x1 + (rng() > 0.5 ? 1 : -1)))
-    const y2 = Math.min(4, Math.max(0, y1 + Math.floor(rng() * 3) - 1))
+    const x1 = Math.floor(rng() * 3); // left half incl. center
+    const y1 = Math.floor(rng() * 5);
+    const x2 = Math.min(2, Math.max(0, x1 + (rng() > 0.5 ? 1 : -1)));
+    const y2 = Math.min(4, Math.max(0, y1 + Math.floor(rng() * 3) - 1));
 
-    strokes.push(`M${gx(x1)} ${gy(y1)} L${gx(x2)} ${gy(y2)}`)
+    strokes.push(`M${gx(x1)} ${gy(y1)} L${gx(x2)} ${gy(y2)}`);
     // mirror (col i → col 4-i)
-    strokes.push(`M${gx(4 - x1)} ${gy(y1)} L${gx(4 - x2)} ${gy(y2)}`)
+    strokes.push(`M${gx(4 - x1)} ${gy(y1)} L${gx(4 - x2)} ${gy(y2)}`);
 
     // occasional cross-tie through the axis for connectedness
     if (rng() > 0.6) {
-      strokes.push(`M${gx(x2)} ${gy(y2)} L${gx(4 - x2)} ${gy(y2)}`)
+      strokes.push(`M${gx(x2)} ${gy(y2)} L${gx(4 - x2)} ${gy(y2)}`);
     }
   }
 
   // spine down the axis grounds every variant
-  strokes.push(`M20 ${gy(0)} L20 ${gy(4)}`)
+  strokes.push(`M20 ${gy(0)} L20 ${gy(4)}`);
 
-  const ring = rng() > 0.45 ? 'M20 4 L36 20 L20 36 L4 20 Z' : null
-  return { strokes: strokes.join(' '), ring }
+  const ring = rng() > 0.45 ? "M20 4 L36 20 L20 36 L4 20 Z" : null;
+  return { strokes: strokes.join(" "), ring };
 }
 
 const AVATAR_COLORS = [
-  '#f5f5f4', // white
-  '#8d6748', // brown
-  '#ef4444', // red
-  '#f97316', // orange
-  '#14b8a6', // teal
-  '#38bdf8', // cyan
-  '#3b40c8', // royal blue
-  '#8b5cf6', // violet
-  '#ec4899', // magenta
-  '#9ca3af' // silver
-]
+  "#f5f5f4", // white
+  "#8d6748", // brown
+  "#ef4444", // red
+  "#f97316", // orange
+  "#14b8a6", // teal
+  "#38bdf8", // cyan
+  "#3b40c8", // royal blue
+  "#8b5cf6", // violet
+  "#ec4899", // magenta
+  "#9ca3af", // silver
+];
 
 /** Perceptual luminance — eyes/pupils flip light on dark bodies (ink, oxblood). */
 function isDarkColor(hex) {
   try {
-    const n = parseInt(hex.slice(1), 16)
-    const r = (n >> 16) & 255
-    const g = (n >> 8) & 255
-    const b = n & 255
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 110
+    const n = parseInt(hex.slice(1), 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 110;
   } catch {
-    return false
+    return false;
   }
 }
 
 function defaultShapeFor(name) {
-  let hash = 0
+  let hash = 0;
   for (const ch of name) {
-    hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+    hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   }
-  return AVATAR_SHAPES[hash % AVATAR_SHAPES.length]
+  return AVATAR_SHAPES[hash % AVATAR_SHAPES.length];
 }
 
 /** The colored body of the avatar (no eyes). Platonic solids are a filled
  *  silhouette + translucent internal edge lines (the projected wireframe);
  *  legacy flat shapes keep their old geometry so stored picks still render. */
-function shapeNode(shape, color, botName = 'agent') {
-  if (shape.startsWith('sigil-')) {
-    const seed = Number(shape.slice(6)) || 0
-    const { strokes, ring } = sigilGeometry(botName, seed)
-    const sw = { fill: 'none', stroke: color, strokeWidth: 2.2, strokeLinecap: 'round', strokeLinejoin: 'round' }
-    return jsxs('g', {
+function shapeNode(shape, color, botName = "agent") {
+  if (shape.startsWith("sigil-")) {
+    const seed = Number(shape.slice(6)) || 0;
+    const { strokes, ring } = sigilGeometry(botName, seed);
+    const sw = {
+      fill: "none",
+      stroke: color,
+      strokeWidth: 2.2,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+    };
+    return jsxs("g", {
       children: [
-        ring ? jsx('path', { d: ring, fill: 'none', stroke: color, strokeWidth: 1.2, opacity: 0.5 }) : null,
-        jsx('path', { d: strokes, ...sw })
-      ]
-    })
+        ring
+          ? jsx("path", {
+              d: ring,
+              fill: "none",
+              stroke: color,
+              strokeWidth: 1.2,
+              opacity: 0.5,
+            })
+          : null,
+        jsx("path", { d: strokes, ...sw }),
+      ],
+    });
   }
 
-  const stroke = { fill: color, stroke: color, strokeWidth: 7, strokeLinejoin: 'round' }
-  const edge = { fill: 'none', stroke: 'rgba(0,0,0,0.4)', strokeWidth: 1.4, strokeLinejoin: 'round', strokeLinecap: 'round' }
-  const face = { fill: color, stroke: 'rgba(0,0,0,0.4)', strokeWidth: 1.4, strokeLinejoin: 'round' }
+  const stroke = {
+    fill: color,
+    stroke: color,
+    strokeWidth: 7,
+    strokeLinejoin: "round",
+  };
+  const edge = {
+    fill: "none",
+    stroke: "rgba(0,0,0,0.4)",
+    strokeWidth: 1.4,
+    strokeLinejoin: "round",
+    strokeLinecap: "round",
+  };
+  const face = {
+    fill: color,
+    stroke: "rgba(0,0,0,0.4)",
+    strokeWidth: 1.4,
+    strokeLinejoin: "round",
+  };
 
   switch (shape) {
     // ── platonic solids ──
-    case 'tetrahedron':
-      return jsxs('g', {
+    case "tetrahedron":
+      return jsxs("g", {
         children: [
-          jsx('path', { d: 'M20 5 L36 33 L4 33 Z', ...face }),
-          jsx('path', { d: 'M20 5 L20 25 M4 33 L20 25 M36 33 L20 25', ...edge })
-        ]
-      })
-    case 'cube':
-      return jsxs('g', {
-        children: [
-          jsx('path', { d: 'M20 4 L33 11 L33 29 L20 36 L7 29 L7 11 Z', ...face }),
-          jsx('path', { d: 'M7 11 L20 18 L33 11 M20 18 L20 36', ...edge })
-        ]
-      })
-    case 'octahedron':
-      return jsxs('g', {
-        children: [
-          jsx('path', { d: 'M20 3 L36 20 L20 37 L4 20 Z', ...face }),
-          jsx('path', { d: 'M4 20 L36 20 M20 3 L20 37', ...edge })
-        ]
-      })
-    case 'dodecahedron':
-      return jsxs('g', {
-        children: [
-          jsx('path', {
-            d: 'M20 3 L30 6.2 L36.2 14.7 L36.2 25.3 L30 33.8 L20 37 L10 33.8 L3.8 25.3 L3.8 14.7 L10 6.2 Z',
-            ...face
+          jsx("path", { d: "M20 5 L36 33 L4 33 Z", ...face }),
+          jsx("path", {
+            d: "M20 5 L20 25 M4 33 L20 25 M36 33 L20 25",
+            ...edge,
           }),
-          jsx('path', {
-            d:
-              'M20 12 L27.6 17.5 L24.7 26.5 L15.3 26.5 L12.4 17.5 Z ' +
-              'M20 12 L20 3 M27.6 17.5 L36.2 14.7 M24.7 26.5 L30 33.8 M15.3 26.5 L10 33.8 M12.4 17.5 L3.8 14.7',
-            ...edge
-          })
-        ]
-      })
-    case 'icosahedron':
-      return jsxs('g', {
+        ],
+      });
+    case "cube":
+      return jsxs("g", {
         children: [
-          jsx('path', { d: 'M20 3 L34.7 11.5 L34.7 28.5 L20 37 L5.3 28.5 L5.3 11.5 Z', ...face }),
-          jsx('path', {
+          jsx("path", {
+            d: "M20 4 L33 11 L33 29 L20 36 L7 29 L7 11 Z",
+            ...face,
+          }),
+          jsx("path", { d: "M7 11 L20 18 L33 11 M20 18 L20 36", ...edge }),
+        ],
+      });
+    case "octahedron":
+      return jsxs("g", {
+        children: [
+          jsx("path", { d: "M20 3 L36 20 L20 37 L4 20 Z", ...face }),
+          jsx("path", { d: "M4 20 L36 20 M20 3 L20 37", ...edge }),
+        ],
+      });
+    case "dodecahedron":
+      return jsxs("g", {
+        children: [
+          jsx("path", {
+            d: "M20 3 L30 6.2 L36.2 14.7 L36.2 25.3 L30 33.8 L20 37 L10 33.8 L3.8 25.3 L3.8 14.7 L10 6.2 Z",
+            ...face,
+          }),
+          jsx("path", {
             d:
-              'M20 11 L27.8 24.5 L12.2 24.5 Z ' +
-              'M20 11 L20 3 M20 11 L34.7 11.5 M20 11 L5.3 11.5 ' +
-              'M27.8 24.5 L34.7 11.5 M27.8 24.5 L34.7 28.5 M27.8 24.5 L20 37 ' +
-              'M12.2 24.5 L5.3 11.5 M12.2 24.5 L5.3 28.5 M12.2 24.5 L20 37',
-            ...edge
-          })
-        ]
-      })
+              "M20 12 L27.6 17.5 L24.7 26.5 L15.3 26.5 L12.4 17.5 Z " +
+              "M20 12 L20 3 M27.6 17.5 L36.2 14.7 M24.7 26.5 L30 33.8 M15.3 26.5 L10 33.8 M12.4 17.5 L3.8 14.7",
+            ...edge,
+          }),
+        ],
+      });
+    case "icosahedron":
+      return jsxs("g", {
+        children: [
+          jsx("path", {
+            d: "M20 3 L34.7 11.5 L34.7 28.5 L20 37 L5.3 28.5 L5.3 11.5 Z",
+            ...face,
+          }),
+          jsx("path", {
+            d:
+              "M20 11 L27.8 24.5 L12.2 24.5 Z " +
+              "M20 11 L20 3 M20 11 L34.7 11.5 M20 11 L5.3 11.5 " +
+              "M27.8 24.5 L34.7 11.5 M27.8 24.5 L34.7 28.5 M27.8 24.5 L20 37 " +
+              "M12.2 24.5 L5.3 11.5 M12.2 24.5 L5.3 28.5 M12.2 24.5 L20 37",
+            ...edge,
+          }),
+        ],
+      });
 
     // ── legacy flat shapes (stored picks from earlier versions) ──
-    case 'squircle':
-      return jsx('rect', { x: 3, y: 3, width: 34, height: 34, rx: 11, fill: color })
-    case 'pill':
-      return jsx('rect', { x: 2, y: 7, width: 36, height: 26, rx: 13, fill: color })
-    case 'triangle':
-      return jsx('path', { d: 'M20 5.5 L36 33.5 L4 33.5 Z', ...stroke })
-    case 'hexagon':
-      return jsx('path', { d: 'M20 3.5 L34.5 11.75 L34.5 28.25 L20 36.5 L5.5 28.25 L5.5 11.75 Z', ...stroke })
-    case 'cloud':
-      return jsx('path', {
-        d: 'M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z',
-        fill: color
-      })
-    case 'drop':
-      return jsx('path', { d: 'M20 3 C20 3 6 20 6 27 a14 13.5 0 0 0 28 0 C34 20 20 3 20 3 Z', fill: color })
+    case "squircle":
+      return jsx("rect", {
+        x: 3,
+        y: 3,
+        width: 34,
+        height: 34,
+        rx: 11,
+        fill: color,
+      });
+    case "pill":
+      return jsx("rect", {
+        x: 2,
+        y: 7,
+        width: 36,
+        height: 26,
+        rx: 13,
+        fill: color,
+      });
+    case "triangle":
+      return jsx("path", { d: "M20 5.5 L36 33.5 L4 33.5 Z", ...stroke });
+    case "hexagon":
+      return jsx("path", {
+        d: "M20 3.5 L34.5 11.75 L34.5 28.25 L20 36.5 L5.5 28.25 L5.5 11.75 Z",
+        ...stroke,
+      });
+    case "cloud":
+      return jsx("path", {
+        d: "M11 32 a7.5 7.5 0 0 1 -1 -14.9 A9.5 9.5 0 0 1 29 12.5 A7 7 0 0 1 30 32 Z",
+        fill: color,
+      });
+    case "drop":
+      return jsx("path", {
+        d: "M20 3 C20 3 6 20 6 27 a14 13.5 0 0 0 28 0 C34 20 20 3 20 3 Z",
+        fill: color,
+      });
     default:
-      return jsx('circle', { cx: 20, cy: 20, r: 17.5, fill: color })
+      return jsx("circle", { cx: 20, cy: 20, r: 17.5, fill: color });
   }
 }
 
@@ -558,8 +687,8 @@ const EYE_Y = {
   triangle: 25,
   hexagon: 17,
   cloud: 22,
-  drop: 24
-}
+  drop: 24,
+};
 
 // Solids draw eyes slightly tighter so they read as ON a face.
 const EYE_X = {
@@ -567,104 +696,135 @@ const EYE_X = {
   cube: [15, 25],
   octahedron: [16, 24],
   dodecahedron: [16.5, 23.5],
-  icosahedron: [16.5, 23.5]
-}
+  icosahedron: [16.5, 23.5],
+};
 
 /**
  * The face. `mood`: 'idle' (blinks every few seconds), 'work' (eyes scan
  * left-right), 'error' (X X). Eyes flip light-on-dark for ink/oxblood bodies.
  */
-function BotFace({ shape, color, image, size = 36, name = 'agent', mood = 'idle' }) {
+function BotFace({
+  shape,
+  color,
+  image,
+  size = 36,
+  name = "agent",
+  mood = "idle",
+}) {
   // data-bot-face lets the avatar backfill locate this bot's rendered SVG
   // in the DOM to rasterize it for the server asset store (vector shape
   // avatars have no image file anywhere otherwise).
-  const [blink, setBlink] = useState(false)
-  const [scanX, setScanX] = useState(0)
+  const [blink, setBlink] = useState(false);
+  const [scanX, setScanX] = useState(0);
 
   useEffect(() => {
-    if (mood === 'work') {
+    if (mood === "work") {
       // scan: pupils sweep left → right → left
-      let dir = 1
-      let x = 0
+      let dir = 1;
+      let x = 0;
       const t = setInterval(() => {
-        x += dir
+        x += dir;
         if (x >= 2 || x <= -2) {
-          dir = -dir
+          dir = -dir;
         }
-        setScanX(x)
-      }, 180)
-      return () => clearInterval(t)
+        setScanX(x);
+      }, 180);
+      return () => clearInterval(t);
     }
 
-    if (mood === 'idle') {
+    if (mood === "idle") {
       // blink: 120ms closed, randomized 3-7s apart
-      let closeTimer = null
+      let closeTimer = null;
       const schedule = () => {
-        closeTimer = setTimeout(() => {
-          setBlink(true)
-          setTimeout(() => {
-            setBlink(false)
-            schedule()
-          }, 120)
-        }, 3000 + Math.random() * 4000)
-      }
-      schedule()
-      return () => clearTimeout(closeTimer)
+        closeTimer = setTimeout(
+          () => {
+            setBlink(true);
+            setTimeout(() => {
+              setBlink(false);
+              schedule();
+            }, 120);
+          },
+          3000 + Math.random() * 4000,
+        );
+      };
+      schedule();
+      return () => clearTimeout(closeTimer);
     }
 
-    return undefined
-  }, [mood])
+    return undefined;
+  }, [mood]);
 
   // A custom image (uploaded or generated) replaces the vector face.
   if (image) {
-    return jsx('img', {
+    return jsx("img", {
       src: image,
-      alt: '',
-      'aria-hidden': true,
-      style: { width: size, height: size, borderRadius: '22%', objectFit: 'cover', display: 'block' }
-    })
+      alt: "",
+      "aria-hidden": true,
+      style: {
+        width: size,
+        height: size,
+        borderRadius: "22%",
+        objectFit: "cover",
+        display: "block",
+      },
+    });
   }
 
-  const isSigil = shape.startsWith('sigil-')
-  const eyeY = isSigil ? 14 : (EYE_Y[shape] ?? 17)
-  const [eyeL, eyeR] = isSigil ? [16, 24] : (EYE_X[shape] ?? [15.5, 24.5])
+  const isSigil = shape.startsWith("sigil-");
+  const eyeY = isSigil ? 14 : (EYE_Y[shape] ?? 17);
+  const [eyeL, eyeR] = isSigil ? [16, 24] : (EYE_X[shape] ?? [15.5, 24.5]);
   // Sigils are line art (no fill behind the eyes) → eyes in the sigil color.
   // Filled bodies: dark eyes on light colors, parchment eyes on dark colors.
-  const eyeFill = isSigil ? color : isDarkColor(color) ? 'rgba(232,220,195,0.95)' : 'rgba(0,0,0,0.85)'
+  const eyeFill = isSigil
+    ? color
+    : isDarkColor(color)
+      ? "rgba(232,220,195,0.95)"
+      : "rgba(0,0,0,0.85)";
 
   const eyes =
-    mood === 'error'
-      ? jsx('path', {
-          d: `M${eyeL - 2} ${eyeY - 2} L${eyeL + 2} ${eyeY + 2} M${eyeL + 2} ${eyeY - 2} L${eyeL - 2} ${eyeY + 2} ` +
+    mood === "error"
+      ? jsx("path", {
+          d:
+            `M${eyeL - 2} ${eyeY - 2} L${eyeL + 2} ${eyeY + 2} M${eyeL + 2} ${eyeY - 2} L${eyeL - 2} ${eyeY + 2} ` +
             `M${eyeR - 2} ${eyeY - 2} L${eyeR + 2} ${eyeY + 2} M${eyeR + 2} ${eyeY - 2} L${eyeR - 2} ${eyeY + 2}`,
           stroke: eyeFill,
           strokeWidth: 1.6,
-          strokeLinecap: 'round',
-          fill: 'none'
+          strokeLinecap: "round",
+          fill: "none",
         })
       : blink
-        ? jsx('path', {
+        ? jsx("path", {
             d: `M${eyeL - 2.2} ${eyeY} L${eyeL + 2.2} ${eyeY} M${eyeR - 2.2} ${eyeY} L${eyeR + 2.2} ${eyeY}`,
             stroke: eyeFill,
             strokeWidth: 1.8,
-            strokeLinecap: 'round',
-            fill: 'none'
+            strokeLinecap: "round",
+            fill: "none",
           })
-        : jsxs('g', {
+        : jsxs("g", {
             children: [
-              jsx('circle', { cx: eyeL + scanX, cy: eyeY, r: 2.4, fill: eyeFill }),
-              jsx('circle', { cx: eyeR + scanX, cy: eyeY, r: 2.4, fill: eyeFill })
-            ]
-          })
+              jsx("circle", {
+                cx: eyeL + scanX,
+                cy: eyeY,
+                r: 2.4,
+                fill: eyeFill,
+              }),
+              jsx("circle", {
+                cx: eyeR + scanX,
+                cy: eyeY,
+                r: 2.4,
+                fill: eyeFill,
+              }),
+            ],
+          });
 
-  return jsxs('svg', {
-    'data-bot-face': name,
-    viewBox: '0 0 40 40',
+  return jsxs("svg", {
+    "data-bot-face": name,
+    viewBox: "0 0 40 40",
     width: size,
     height: size,
-    'aria-hidden': true,
-    children: [shapeNode(shape, color, name), eyes]
-  })
+    "aria-hidden": true,
+    children: [shapeNode(shape, color, name), eyes],
+  });
 }
 
 // -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
@@ -676,198 +836,283 @@ async function mcpRpc(method, params) {
   // Returns { ok, result } or { ok:false, unsupported:true } when the gateway
   // doesn't know the method (older backend) vs a real error.
   try {
-    const res = await host.request(method, params)
-    return { ok: true, result: res }
+    const res = await host.request(method, params);
+    return { ok: true, result: res };
   } catch (err) {
-    const msg = String((err && err.message) || err || '')
+    const msg = String((err && err.message) || err || "");
     if (/unknown method/i.test(msg)) {
-      return { ok: false, unsupported: true }
+      return { ok: false, unsupported: true };
     }
-    return { ok: false, error: msg }
+    return { ok: false, error: msg };
   }
 }
 
 // Probe whether the new lifecycle RPCs exist on this gateway (cached per session).
-let _mcpRpcSupported = null
+let _mcpRpcSupported = null;
 async function mcpSetupSupported() {
   if (_mcpRpcSupported !== null) {
-    return _mcpRpcSupported
+    return _mcpRpcSupported;
   }
-  const r = await mcpRpc('mcp.servers.list', {})
-  _mcpRpcSupported = !(r.ok === false && r.unsupported)
-  return _mcpRpcSupported
+  const r = await mcpRpc("mcp.servers.list", {});
+  _mcpRpcSupported = !(r.ok === false && r.unsupported);
+  return _mcpRpcSupported;
 }
 
 function McpSetupButton({ profile, entry, onDone }) {
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
-  const [phase, setPhase] = useState('idle') // idle | keys | oauth | busy | done | error
-  const [supported, setSupported] = useState(null)
-  const [keyValues, setKeyValues] = useState({})
-  const [message, setMessage] = useState('')
-  const pollRef = useRef(null)
+  const [phase, setPhase] = useState("idle"); // idle | keys | oauth | busy | done | error
+  const [supported, setSupported] = useState(null);
+  const [keyValues, setKeyValues] = useState({});
+  const [message, setMessage] = useState("");
+  const pollRef = useRef(null);
 
   useEffect(() => {
-    let alive = true
-    mcpSetupSupported().then(ok => {
-      if (alive) setSupported(ok)
-    })
+    let alive = true;
+    mcpSetupSupported().then((ok) => {
+      if (alive) setSupported(ok);
+    });
     return () => {
-      alive = false
+      alive = false;
       if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
-    }
-  }, [])
+    };
+  }, []);
 
-  const isOAuth = (entry.auth || '').toLowerCase() === 'oauth'
-  const requires = entry.requires || []
+  const isOAuth = (entry.auth || "").toLowerCase() === "oauth";
+  const requires = entry.requires || [];
 
   const beginKeys = async () => {
     // Ensure the server exists in the target profile first (add from catalog).
-    setPhase('busy')
-    setMessage('')
+    setPhase("busy");
+    setMessage("");
     if (entry.fromCatalog && !entry.installed) {
-      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
+      const add = await mcpRpc("mcp.servers.add", {
+        profile,
+        name: entry.name,
+        preset: entry.name,
+      });
       if (!add.ok) {
-        setPhase('error')
-        setMessage(add.error || 'Could not add server')
-        return
+        setPhase("error");
+        setMessage(add.error || "Could not add server");
+        return;
       }
     }
-    setPhase(isOAuth ? 'oauth' : 'keys')
-  }
+    setPhase(isOAuth ? "oauth" : "keys");
+  };
 
   const submitKeys = async () => {
-    setPhase('busy')
+    setPhase("busy");
     for (const k of requires) {
-      const val = (keyValues[k] || '').trim()
+      const val = (keyValues[k] || "").trim();
       if (!val) {
-        continue
+        continue;
       }
-      const r = await mcpRpc('mcp.servers.set_api_key', { profile, name: entry.name, env_var: k, value: val })
+      const r = await mcpRpc("mcp.servers.set_api_key", {
+        profile,
+        name: entry.name,
+        env_var: k,
+        value: val,
+      });
       if (!r.ok) {
-        setPhase('error')
-        setMessage(r.error || ('Failed to set ' + k))
-        return
+        setPhase("error");
+        setMessage(r.error || "Failed to set " + k);
+        return;
       }
     }
     // Verify via test.
-    const t = await mcpRpc('mcp.servers.test', { profile, name: entry.name })
-    if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
-      setPhase('done')
-      host.notify({ kind: 'success', message: entry.name + ' configured' })
-      onDone && onDone()
+    const t = await mcpRpc("mcp.servers.test", { profile, name: entry.name });
+    if (
+      t.ok &&
+      t.result &&
+      (t.result.ok || (t.result.result && t.result.result.ok))
+    ) {
+      setPhase("done");
+      host.notify({ kind: "success", message: entry.name + " configured" });
+      onDone && onDone();
     } else {
-      setPhase('error')
-      setMessage((t.result && (t.result.error || (t.result.result && t.result.result.error))) || 'Server test failed after setup')
+      setPhase("error");
+      setMessage(
+        (t.result &&
+          (t.result.error || (t.result.result && t.result.result.error))) ||
+          "Server test failed after setup",
+      );
     }
-  }
+  };
 
   const beginOAuth = async () => {
-    setPhase('busy')
-    setMessage('')
+    setPhase("busy");
+    setMessage("");
     if (entry.fromCatalog && !entry.installed) {
-      const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
+      const add = await mcpRpc("mcp.servers.add", {
+        profile,
+        name: entry.name,
+        preset: entry.name,
+      });
       if (!add.ok) {
-        setPhase('error')
-        setMessage(add.error || 'Could not add server')
-        return
+        setPhase("error");
+        setMessage(add.error || "Could not add server");
+        return;
       }
     }
-    const start = await mcpRpc('mcp.servers.oauth.start', { profile, name: entry.name })
-    const payload = start.result && (start.result.result || start.result)
-    const authUrl = payload && (payload.auth_url || payload.verification_url)
-    const sessionId = payload && payload.session_id
+    const start = await mcpRpc("mcp.servers.oauth.start", {
+      profile,
+      name: entry.name,
+    });
+    const payload = start.result && (start.result.result || start.result);
+    const authUrl = payload && (payload.auth_url || payload.verification_url);
+    const sessionId = payload && payload.session_id;
     if (!start.ok || !authUrl || !sessionId) {
-      setPhase('error')
-      setMessage((start.error) || 'Could not start OAuth')
-      return
+      setPhase("error");
+      setMessage(start.error || "Could not start OAuth");
+      return;
     }
     // Open the auth URL in the native browser, same as provider OAuth.
+    // Validate: must be https to prevent open-redirect via a crafted server response.
+    let safeAuthUrl = null;
+    try {
+      const parsed = new URL(String(authUrl));
+      if (parsed.protocol === "https:") safeAuthUrl = parsed.toString();
+    } catch {}
+    if (!safeAuthUrl) {
+      setPhase("error");
+      setMessage("OAuth returned an invalid auth URL");
+      return;
+    }
     try {
       if (host.openExternal) {
-        host.openExternal(authUrl)
-      } else if (typeof window !== 'undefined' && window.hermesDesktop && window.hermesDesktop.openExternal) {
-        window.hermesDesktop.openExternal(authUrl)
+        host.openExternal(safeAuthUrl);
+      } else if (
+        typeof window !== "undefined" &&
+        window.hermesDesktop &&
+        window.hermesDesktop.openExternal
+      ) {
+        window.hermesDesktop.openExternal(safeAuthUrl);
       } else {
-        window.open(authUrl, '_blank')
+        // No native opener — show the URL so the user can open it manually
+        // (avoids window.open with dynamic URL which triggers open-redirect lint).
+        host.notify({
+          kind: "info",
+          message: `Open this URL to authenticate: ${safeAuthUrl}`,
+        });
       }
     } catch {
       /* fall through to poll; user can open the URL from the toast */
     }
-    setPhase('oauth')
-    setMessage('Complete sign-in in your browser...')
+    setPhase("oauth");
+    setMessage("Complete sign-in in your browser...");
     pollRef.current = setInterval(async () => {
-      const poll = await mcpRpc('mcp.servers.oauth.poll', { profile, name: entry.name, session_id: sessionId })
-      const pd = poll.result && (poll.result.result || poll.result)
-      const status = pd && pd.status
-      if (status === 'approved') {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setPhase('done')
-        host.notify({ kind: 'success', message: entry.name + ' authenticated' })
-        onDone && onDone()
-      } else if (status === 'error') {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setPhase('error')
-        setMessage((pd && pd.error_message) || 'OAuth failed')
+      const poll = await mcpRpc("mcp.servers.oauth.poll", {
+        profile,
+        name: entry.name,
+        session_id: sessionId,
+      });
+      const pd = poll.result && (poll.result.result || poll.result);
+      const status = pd && pd.status;
+      if (status === "approved") {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+        setPhase("done");
+        host.notify({
+          kind: "success",
+          message: entry.name + " authenticated",
+        });
+        onDone && onDone();
+      } else if (status === "error") {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+        setPhase("error");
+        setMessage((pd && pd.error_message) || "OAuth failed");
       }
-    }, 2000)
-  }
+    }, 2000);
+  };
 
   if (supported === false) {
-    return jsx('span', {
-      className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-      children: 'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'
-    })
+    return jsx("span", {
+      className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
+      children:
+        "needs setup (" +
+        requires.join(", ") +
+        ") \u2014 restart the gateway to enable in-app setup",
+    });
   }
-  if (phase === 'done') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-success,#22c55e)', children: 'set up \u2713' })
+  if (phase === "done") {
+    return jsx("span", {
+      className: "ml-1.5 text-[0.65rem] text-(--ui-success,#22c55e)",
+      children: "set up \u2713",
+    });
   }
-  if (phase === 'keys') {
-    return jsxs('div', {
-      className: 'mt-1 grid gap-1',
+  if (phase === "keys") {
+    return jsxs("div", {
+      className: "mt-1 grid gap-1",
       children: [
-        ...requires.map(k =>
-          jsx(Input, {
-            key: k,
-            type: 'password',
-            className: 'h-6 text-[0.7rem]',
-            placeholder: k,
-            value: keyValues[k] || '',
-            onChange: e => setKeyValues(prev => ({ ...prev, [k]: e.target.value }))
-          }, k)
+        ...requires.map((k) =>
+          jsx(
+            Input,
+            {
+              key: k,
+              type: "password",
+              className: "h-6 text-[0.7rem]",
+              placeholder: k,
+              value: keyValues[k] || "",
+              onChange: (e) =>
+                setKeyValues((prev) => ({ ...prev, [k]: e.target.value })),
+            },
+            k,
+          ),
         ),
-        jsxs('div', {
-          className: 'flex gap-1',
+        jsxs("div", {
+          className: "flex gap-1",
           children: [
-            jsx(Button, { size: 'xs', variant: 'secondary', onClick: () => void submitKeys(), children: 'Save & test' }),
-            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPhase('idle'), children: 'Cancel' })
-          ]
-        })
-      ]
-    })
+            jsx(Button, {
+              size: "xs",
+              variant: "secondary",
+              onClick: () => void submitKeys(),
+              children: "Save & test",
+            }),
+            jsx(Button, {
+              size: "xs",
+              variant: "ghost",
+              onClick: () => setPhase("idle"),
+              children: "Cancel",
+            }),
+          ],
+        }),
+      ],
+    });
   }
-  if (phase === 'oauth') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: message || 'Authorizing\u2026' })
+  if (phase === "oauth") {
+    return jsx("span", {
+      className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
+      children: message || "Authorizing\u2026",
+    });
   }
-  if (phase === 'busy') {
-    return jsx('span', { className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)', children: 'Working\u2026' })
+  if (phase === "busy") {
+    return jsx("span", {
+      className: "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
+      children: "Working\u2026",
+    });
   }
-  if (phase === 'error') {
-    return jsxs('span', {
-      className: 'ml-1.5 text-[0.65rem] text-(--ui-danger,#ef4444)',
-      children: [(message || 'Setup failed') + ' ', jsx('button', { className: 'underline', onClick: () => setPhase('idle'), children: 'retry' })]
-    })
+  if (phase === "error") {
+    return jsxs("span", {
+      className: "ml-1.5 text-[0.65rem] text-(--ui-danger,#ef4444)",
+      children: [
+        (message || "Setup failed") + " ",
+        jsx("button", {
+          className: "underline",
+          onClick: () => setPhase("idle"),
+          children: "retry",
+        }),
+      ],
+    });
   }
   // idle
-  return jsx('button', {
-    className: 'ml-1.5 text-[0.65rem] text-(--ui-accent,#4f9cf9) underline',
+  return jsx("button", {
+    className: "ml-1.5 text-[0.65rem] text-(--ui-accent,#4f9cf9) underline",
     onClick: () => void (isOAuth ? beginOAuth() : beginKeys()),
-    children: isOAuth ? 'Sign in\u2026' : 'Set up\u2026'
-  })
+    children: isOAuth ? "Sign in\u2026" : "Set up\u2026",
+  });
 }
 
 function botAppearance(name, meta) {
@@ -877,325 +1122,374 @@ function botAppearance(name, meta) {
   // primary a nice fixed generic look (a friendly violet squircle). A user's
   // EXPLICIT customization still wins: an uploaded/generated/pet image, or a
   // shape/color they set via the editor (tracked by meta.custom === true).
-  const isPrimary = (name || '').trim().toLowerCase() === 'default'
-  const userCustomized = Boolean(meta?.custom)
+  const isPrimary = (name || "").trim().toLowerCase() === "default";
+  const userCustomized = Boolean(meta?.custom);
   if (isPrimary && !userCustomized) {
-    return { shape: 'squircle', color: '#8b5cf6', image: meta?.image || null }
+    return { shape: "squircle", color: "#8b5cf6", image: meta?.image || null };
   }
   return {
     shape: meta?.shape || defaultShapeFor(name),
     color: meta?.color || profileColor(name),
-    image: meta?.image || null
-  }
+    image: meta?.image || null,
+  };
 }
 
 // ── image avatars: upload from device + generate via image.generate ─────────
 
 /** Downscale to a small square so plugin storage stays light. */
 function normalizeAvatarImage(dataUrl, edge = 256) {
-  return new Promise(resolve => {
-    const img = new Image()
+  return new Promise((resolve) => {
+    const img = new Image();
     img.onload = () => {
       try {
-        const canvas = document.createElement('canvas')
-        canvas.width = edge
-        canvas.height = edge
-        const ctx2d = canvas.getContext('2d')
-        const side = Math.min(img.width, img.height)
-        ctx2d.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, edge, edge)
-        resolve(canvas.toDataURL('image/png'))
+        const canvas = document.createElement("canvas");
+        canvas.width = edge;
+        canvas.height = edge;
+        const ctx2d = canvas.getContext("2d");
+        const side = Math.min(img.width, img.height);
+        ctx2d.drawImage(
+          img,
+          (img.width - side) / 2,
+          (img.height - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          edge,
+          edge,
+        );
+        resolve(canvas.toDataURL("image/png"));
       } catch {
-        resolve(dataUrl)
+        resolve(dataUrl);
       }
-    }
-    img.onerror = () => resolve(dataUrl)
-    img.src = dataUrl
-  })
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 function pickImageFromDevice() {
-  return new Promise(resolve => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/png,image/jpeg,image/webp,image/gif'
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,image/gif";
     input.onchange = () => {
-      const file = input.files?.[0]
+      const file = input.files?.[0];
 
       if (!file) {
-        return resolve(null)
+        return resolve(null);
       }
 
       if (file.size > 15_000_000) {
-        host.notify({ kind: 'error', message: 'Image too large (max 15MB).' })
-        return resolve(null)
+        host.notify({ kind: "error", message: "Image too large (max 15MB)." });
+        return resolve(null);
       }
 
-      const reader = new FileReader()
-      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
-      reader.onerror = () => resolve(null)
-      reader.readAsDataURL(file)
-    }
-    input.click()
-  })
+      const reader = new FileReader();
+      reader.onload = () =>
+        resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  });
 }
 
 /** Cached probe: does the gateway have an image backend? A `false` answer
  *  is re-checked on every dialog open — the gateway may have been restarted
  *  (picking up image.generate) or a backend enabled since the last probe.
  *  Only `true` is sticky. */
-const $imagenAvailable = atom(null)
-let imagenProbeInflight = null
+const $imagenAvailable = atom(null);
+let imagenProbeInflight = null;
 
 function probeImagen() {
   if (imagenProbeInflight) {
-    return imagenProbeInflight
+    return imagenProbeInflight;
   }
 
   imagenProbeInflight = host
-    .request('image.generate', { probe: true })
-    .then(res => $imagenAvailable.set(Boolean(res?.available)))
+    .request("image.generate", { probe: true })
+    .then((res) => $imagenAvailable.set(Boolean(res?.available)))
     .catch(() => $imagenAvailable.set(false))
     .finally(() => {
-      imagenProbeInflight = null
-    })
+      imagenProbeInflight = null;
+    });
 
-  return imagenProbeInflight
+  return imagenProbeInflight;
 }
 
 async function generateAvatarImage(bot, title, description) {
-  const who = [title || bot, description].filter(Boolean).join(' — ')
-  const res = await host.request('image.generate', {
+  const who = [title || bot, description].filter(Boolean).join(" — ");
+  const res = await host.request("image.generate", {
     prompt:
       `Cute minimal robot avatar for an AI agent named "${who}". ` +
-      'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
-    aspect_ratio: 'square'
-  })
+      "Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.",
+    aspect_ratio: "square",
+  });
 
   if (!res?.success) {
-    throw new Error(res?.error || 'generation failed')
+    throw new Error(res?.error || "generation failed");
   }
 
   // image_data (data URL) works over local AND remote gateways; the raw
   // backend URL is the fallback when the gateway couldn't inline it.
-  return res.image_data || res.image
+  return res.image_data || res.image;
 }
 
 /** Shape grid + color swatches, shared by Edit Profile and New Agent.
  *  Layout uses inline grid styles — arbitrary Tailwind classes like
  *  `grid-cols-7` are NOT in the app's precompiled CSS, which collapsed
  *  this into a single vertical column. */
-function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generateSeed }) {
-  const pickerName = generateSeed?.name || 'agent'
-  const imagen = useValue($imagenAvailable)
-  const [tab, setTab] = useState('bot')
-  const [describe, setDescribe] = useState('')
-  const [genBusy, setGenBusy] = useState(false)
+function AvatarPicker({
+  shape,
+  color,
+  image,
+  onShape,
+  onColor,
+  onImage,
+  generateSeed,
+}) {
+  const pickerName = generateSeed?.name || "agent";
+  const imagen = useValue($imagenAvailable);
+  const [tab, setTab] = useState("bot");
+  const [describe, setDescribe] = useState("");
+  const [genBusy, setGenBusy] = useState(false);
 
-  if (imagen === null) {
-    void probeImagen()
-  }
+  useEffect(() => {
+    if (imagen === null) void probeImagen();
+  }, [imagen]);
 
   // Re-check a stale "unavailable" whenever the user lands on the Generate
   // tab — the gateway may have restarted with image.generate since.
-  const goTab = id => {
-    setTab(id)
+  const goTab = (id) => {
+    setTab(id);
 
-    if (id === 'generate' && $imagenAvailable.get() === false) {
-      $imagenAvailable.set(null)
-      void probeImagen()
+    if (id === "generate" && $imagenAvailable.get() === false) {
+      $imagenAvailable.set(null);
+      void probeImagen();
     }
-  }
+  };
 
   const upload = async () => {
-    const raw = await pickImageFromDevice()
+    const raw = await pickImageFromDevice();
 
     if (raw) {
-      onImage(await normalizeAvatarImage(raw))
+      onImage(await normalizeAvatarImage(raw));
     }
-  }
+  };
 
   const generate = async () => {
     if (genBusy) {
-      return
+      return;
     }
 
-    setGenBusy(true)
+    setGenBusy(true);
 
     try {
-      const custom = describe.trim()
+      const custom = describe.trim();
       const img = custom
         ? await (async () => {
-            const res = await host.request('image.generate', {
+            const res = await host.request("image.generate", {
               prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
-              aspect_ratio: 'square'
-            })
+              aspect_ratio: "square",
+            });
 
             if (!res?.success) {
-              throw new Error(res?.error || 'generation failed')
+              throw new Error(res?.error || "generation failed");
             }
 
-            return res.image_data || res.image
+            return res.image_data || res.image;
           })()
-        : await generateAvatarImage(generateSeed?.name || 'agent', generateSeed?.title, generateSeed?.description)
+        : await generateAvatarImage(
+            generateSeed?.name || "agent",
+            generateSeed?.title,
+            generateSeed?.description,
+          );
 
       if (img) {
-        onImage(await normalizeAvatarImage(img))
+        onImage(await normalizeAvatarImage(img));
       }
     } catch (err) {
-      host.notifyError(err, 'Avatar generation failed')
+      host.notifyError(err, "Avatar generation failed");
     } finally {
-      setGenBusy(false)
+      setGenBusy(false);
     }
-  }
+  };
 
   const tabButton = (id, label) =>
     jsx(
-      'button',
+      "button",
       {
-        type: 'button',
+        type: "button",
         className: cn(
-          'rounded-full px-3 py-1 text-xs font-medium transition-colors',
+          "rounded-full px-3 py-1 text-xs font-medium transition-colors",
           tab === id
-            ? 'bg-(--chrome-action-hover) text-foreground'
-            : 'text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)'
+            ? "bg-(--chrome-action-hover) text-foreground"
+            : "text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
         ),
         onClick: () => goTab(id),
-        children: label
+        children: label,
       },
-      id
-    )
+      id,
+    );
 
-  return jsxs('div', {
-    className: 'grid justify-items-center gap-3',
+  return jsxs("div", {
+    className: "grid justify-items-center gap-3",
     children: [
       // Tab pills: Bot | Generate | Upload | Pet
-      jsxs('div', {
-        className: 'flex items-center gap-1',
-        children: [tabButton('bot', 'Bot'), tabButton('generate', 'Generate'), tabButton('upload', 'Upload'), tabButton('pet', 'Pet')]
+      jsxs("div", {
+        className: "flex items-center gap-1",
+        children: [
+          tabButton("bot", "Bot"),
+          tabButton("generate", "Generate"),
+          tabButton("upload", "Upload"),
+          tabButton("pet", "Pet"),
+        ],
       }),
 
-      image && tab !== 'generate'
+      image && tab !== "generate"
         ? jsx(Button, {
-            type: 'button',
-            variant: 'ghost',
-            size: 'sm',
+            type: "button",
+            variant: "ghost",
+            size: "sm",
             onClick: () => onImage(null),
-            children: 'Remove image — use shape'
+            children: "Remove image — use shape",
           })
         : null,
 
-      tab === 'bot'
-        ? jsxs('div', {
-            className: 'grid justify-items-center gap-3',
+      tab === "bot"
+        ? jsxs("div", {
+            className: "grid justify-items-center gap-3",
             children: [
-              jsx('div', {
+              jsx("div", {
                 style: {
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-                  gap: '6px',
-                  justifyItems: 'center'
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                  gap: "6px",
+                  justifyItems: "center",
                 },
-                children: AVATAR_SHAPES.map(s =>
+                children: AVATAR_SHAPES.map((s) =>
                   jsx(
-                    'button',
+                    "button",
                     {
-                      type: 'button',
+                      type: "button",
                       className: cn(
-                        'flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)',
-                        s === shape && !image && 'ring-1 ring-(--ui-accent)'
+                        "flex items-center justify-center rounded-md transition-colors hover:bg-(--chrome-action-hover)",
+                        s === shape && !image && "ring-1 ring-(--ui-accent)",
                       ),
                       style: { width: 44, height: 44 },
                       onClick: () => {
-                        onImage(null)
-                        onShape(s)
+                        onImage(null);
+                        onShape(s);
                       },
-                      children: jsx(BotFace, { shape: s, color, size: 32, name: pickerName })
+                      children: jsx(BotFace, {
+                        shape: s,
+                        color,
+                        size: 32,
+                        name: pickerName,
+                      }),
                     },
-                    s
-                  )
-                )
+                    s,
+                  ),
+                ),
               }),
-              jsx('div', {
+              jsx("div", {
                 style: {
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
-                  gap: '8px',
-                  justifyItems: 'center'
+                  display: "grid",
+                  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+                  gap: "8px",
+                  justifyItems: "center",
                 },
-                children: AVATAR_COLORS.map(c =>
+                children: AVATAR_COLORS.map((c) =>
                   jsx(
-                    'button',
+                    "button",
                     {
-                      type: 'button',
+                      type: "button",
                       className: cn(
-                        'rounded-full transition-transform hover:scale-110',
-                        c === color && 'ring-2 ring-(--ui-accent) ring-offset-1 ring-offset-(--ui-bg, transparent)'
+                        "rounded-full transition-transform hover:scale-110",
+                        c === color &&
+                          "ring-2 ring-(--ui-accent) ring-offset-1 ring-offset-(--ui-bg, transparent)",
                       ),
                       style: { width: 22, height: 22, backgroundColor: c },
-                      onClick: () => onColor(c)
+                      onClick: () => onColor(c),
                     },
-                    c
-                  )
-                )
-              })
-            ]
+                    c,
+                  ),
+                ),
+              }),
+            ],
           })
         : null,
 
-      tab === 'generate'
+      tab === "generate"
         ? imagen
-          ? jsxs('div', {
-              className: 'grid w-full gap-2',
+          ? jsxs("div", {
+              className: "grid w-full gap-2",
               children: [
                 jsx(Textarea, {
-                  className: 'min-h-16 text-xs',
-                  placeholder: 'Describe your avatar…',
+                  className: "min-h-16 text-xs",
+                  placeholder: "Describe your avatar…",
                   value: describe,
-                  onChange: event => setDescribe(event.target.value)
+                  onChange: (event) => setDescribe(event.target.value),
                 }),
                 jsxs(Button, {
-                  type: 'button',
-                  variant: 'secondary',
-                  className: 'w-full justify-center',
+                  type: "button",
+                  variant: "secondary",
+                  className: "w-full justify-center",
                   disabled: genBusy,
                   onClick: generate,
                   children: [
                     genBusy
-                      ? jsx(GlyphSpinner, { spinner: 'breathe', className: 'mr-1 text-[0.8rem]' })
-                      : jsx(Codicon, { name: 'sparkle', className: 'mr-1 text-[0.8rem]' }),
-                    genBusy ? 'Generating…' : 'Generate'
-                  ]
+                      ? jsx(GlyphSpinner, {
+                          spinner: "breathe",
+                          className: "mr-1 text-[0.8rem]",
+                        })
+                      : jsx(Codicon, {
+                          name: "sparkle",
+                          className: "mr-1 text-[0.8rem]",
+                        }),
+                    genBusy ? "Generating…" : "Generate",
+                  ],
                 }),
                 describe.trim()
                   ? null
-                  : jsx('div', {
-                      className: 'text-center text-[0.65rem] text-(--ui-text-quaternary)',
-                      children: 'Leave blank to generate from the agent\u2019s name and description.'
-                    })
-              ]
+                  : jsx("div", {
+                      className:
+                        "text-center text-[0.65rem] text-(--ui-text-quaternary)",
+                      children:
+                        "Leave blank to generate from the agent\u2019s name and description.",
+                    }),
+              ],
             })
-          : jsx('div', {
-              className: 'px-2 py-3 text-center text-xs leading-5 text-(--ui-text-tertiary)',
+          : jsx("div", {
+              className:
+                "px-2 py-3 text-center text-xs leading-5 text-(--ui-text-tertiary)",
               children:
                 imagen === false
                   ? 'No image model available. If you just enabled one (or updated Hermes), restart the gateway: Ctrl+K → "Restart gateway".'
-                  : 'Checking image backend…'
+                  : "Checking image backend…",
             })
         : null,
 
-      tab === 'upload'
+      tab === "upload"
         ? jsxs(Button, {
-            type: 'button',
-            variant: 'secondary',
-            className: 'w-full justify-center',
+            type: "button",
+            variant: "secondary",
+            className: "w-full justify-center",
             onClick: upload,
-            children: [jsx(Codicon, { name: 'device-camera', className: 'mr-1 text-[0.8rem]' }), 'Choose an image…']
+            children: [
+              jsx(Codicon, {
+                name: "device-camera",
+                className: "mr-1 text-[0.8rem]",
+              }),
+              "Choose an image…",
+            ],
           })
         : null,
 
-      tab === 'pet' ? jsx(PetTab, { image, onImage }) : null
-    ]
-  })
+      tab === "pet" ? jsx(PetTab, { image, onImage }) : null,
+    ],
+  });
 }
 
 // ── pet tab: attach a petdex companion that lives beside the avatar ─────────
@@ -1205,223 +1499,259 @@ function AvatarPicker({ shape, color, image, onShape, onColor, onImage, generate
 // per tile and shows the whole sheet squashed. Extract frame 0 once per slug
 // via canvas, downscale to 96px, and cache the data URL. Concurrency-capped
 // so opening the tab doesn't fire dozens of 2MB fetches at once.
-const PET_FRAME_W = 192
-const PET_FRAME_H = 208
-const petFrameCache = new Map()
-let petFetchActive = 0
-const petFetchQueue = []
+const PET_FRAME_W = 192;
+const PET_FRAME_H = 208;
+const petFrameCache = new Map();
+let petFetchActive = 0;
+const petFetchQueue = [];
 
 function pumpPetQueue() {
   while (petFetchActive < 4 && petFetchQueue.length) {
-    const job = petFetchQueue.shift()
-    petFetchActive++
+    const job = petFetchQueue.shift();
+    petFetchActive++;
     job().finally(() => {
-      petFetchActive--
-      pumpPetQueue()
-    })
+      petFetchActive--;
+      pumpPetQueue();
+    });
   }
 }
 
 function petFrameIcon(spriteUrl) {
   if (!spriteUrl) {
-    return Promise.resolve(null)
+    return Promise.resolve(null);
   }
 
   if (!petFrameCache.has(spriteUrl)) {
     petFrameCache.set(
       spriteUrl,
-      new Promise(resolve => {
+      new Promise((resolve) => {
         petFetchQueue.push(async () => {
           try {
-            const resp = await fetch(spriteUrl)
-            const blob = await resp.blob()
+            const resp = await fetch(spriteUrl);
+            const blob = await resp.blob();
             // Crop frame 0 during decode — never materialize the full sheet.
-            const bitmap = await createImageBitmap(blob, 0, 0, PET_FRAME_W, PET_FRAME_H)
-            const canvas = document.createElement('canvas')
-            canvas.width = 96
-            canvas.height = 104
-            canvas.getContext('2d').drawImage(bitmap, 0, 0, 96, 104)
-            bitmap.close()
-            resolve(canvas.toDataURL('image/png'))
+            const bitmap = await createImageBitmap(
+              blob,
+              0,
+              0,
+              PET_FRAME_W,
+              PET_FRAME_H,
+            );
+            const canvas = document.createElement("canvas");
+            canvas.width = 96;
+            canvas.height = 104;
+            canvas.getContext("2d").drawImage(bitmap, 0, 0, 96, 104);
+            bitmap.close();
+            resolve(canvas.toDataURL("image/png"));
           } catch {
-            resolve(null)
+            resolve(null);
           }
-        })
-        pumpPetQueue()
-      })
-    )
+        });
+        pumpPetQueue();
+      }),
+    );
   }
 
-  return petFrameCache.get(spriteUrl)
+  return petFrameCache.get(spriteUrl);
 }
 
 /** One pet tile image: frame 0 only, resolved lazily through the cache. */
 function PetThumb({ spriteUrl, size = 40 }) {
-  const [icon, setIcon] = useState(null)
+  const [icon, setIcon] = useState(null);
 
   useEffect(() => {
-    let alive = true
-    petFrameIcon(spriteUrl).then(url => {
+    let alive = true;
+    petFrameIcon(spriteUrl).then((url) => {
       if (alive) {
-        setIcon(url)
+        setIcon(url);
       }
-    })
+    });
     return () => {
-      alive = false
-    }
-  }, [spriteUrl])
+      alive = false;
+    };
+  }, [spriteUrl]);
 
   if (!icon) {
-    return jsx('div', {
-      style: { width: size, height: size, borderRadius: 6, background: 'var(--chrome-action-hover, rgba(255,255,255,0.06))' }
-    })
+    return jsx("div", {
+      style: {
+        width: size,
+        height: size,
+        borderRadius: 6,
+        background: "var(--chrome-action-hover, rgba(255,255,255,0.06))",
+      },
+    });
   }
 
-  return jsx('img', {
+  return jsx("img", {
     src: icon,
-    alt: '',
-    style: { width: size, height: size, objectFit: 'contain', imageRendering: 'pixelated', borderRadius: 6 }
-  })
+    alt: "",
+    style: {
+      width: size,
+      height: size,
+      objectFit: "contain",
+      imageRendering: "pixelated",
+      borderRadius: 6,
+    },
+  });
 }
 
 function PetTab({ image, onImage }) {
   // Selection is dialog-local: committed by the dialog's Save like any
   // uploaded/generated image (a direct meta write here gets clobbered by
   // Save's own image state).
-  const [selectedSlug, setSelectedSlug] = useState(null)
+  const [selectedSlug, setSelectedSlug] = useState(null);
   const { data, isLoading } = useQuery({
-    queryKey: [ID, 'pet-gallery'],
-    queryFn: () => host.request('pet.gallery', {}),
-    staleTime: 300000
-  })
-  const [query, setQuery] = useState('')
+    queryKey: [ID, "pet-gallery"],
+    queryFn: () => host.request("pet.gallery", {}),
+    staleTime: 300000,
+  });
+  const [query, setQuery] = useState("");
   // Windowed rendering: the gallery is 4500+ pets — mounting an <img> per pet
   // froze the dialog. Render `limit` at a time and grow on scroll-to-bottom.
-  const [limit, setLimit] = useState(24)
-  const pets = data?.pets ?? []
+  const [limit, setLimit] = useState(24);
+  const pets = data?.pets ?? [];
 
   if (isLoading) {
-    return jsx('div', {
-      className: 'flex justify-center py-4',
-      children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
-    })
+    return jsx("div", {
+      className: "flex justify-center py-4",
+      children: jsx(GlyphSpinner, {
+        spinner: "breathe",
+        className: "text-(--ui-text-tertiary)",
+      }),
+    });
   }
 
   if (!pets.length) {
-    return jsx('div', {
-      className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-      children: 'No pets in the petdex gallery. Run `hermes pets` to explore.'
-    })
+    return jsx("div", {
+      className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
+      children: "No pets in the petdex gallery. Run `hermes pets` to explore.",
+    });
   }
 
-  const q = query.trim().toLowerCase()
+  const q = query.trim().toLowerCase();
   const filtered = q
-    ? pets.filter(pet => (pet.displayName || '').toLowerCase().includes(q) || (pet.slug || '').includes(q))
-    : pets
+    ? pets.filter(
+        (pet) =>
+          (pet.displayName || "").toLowerCase().includes(q) ||
+          (pet.slug || "").includes(q),
+      )
+    : pets;
   // Installed and curated pets surface first — they're the likeliest picks.
   const ranked = filtered.slice().sort((a, b) => {
-    const rank = pet => (pet.installed ? 0 : pet.curated ? 1 : 2)
-    return rank(a) - rank(b)
-  })
-  const visible = ranked.slice(0, limit)
+    const rank = (pet) => (pet.installed ? 0 : pet.curated ? 1 : 2);
+    return rank(a) - rank(b);
+  });
+  const visible = ranked.slice(0, limit);
 
-  const onScroll = event => {
-    const el = event.currentTarget
+  const onScroll = (event) => {
+    const el = event.currentTarget;
 
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120 && limit < ranked.length) {
-      setLimit(prev => Math.min(prev + 24, ranked.length))
+    if (
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 120 &&
+      limit < ranked.length
+    ) {
+      setLimit((prev) => Math.min(prev + 24, ranked.length));
     }
-  }
+  };
 
-  return jsxs('div', {
-    className: 'grid w-full gap-2',
+  return jsxs("div", {
+    className: "grid w-full gap-2",
     children: [
-      jsx('div', {
-        className: 'text-center text-[0.65rem] text-(--ui-text-quaternary)',
-        children: 'Pick a pet as this agent’s profile picture.'
+      jsx("div", {
+        className: "text-center text-[0.65rem] text-(--ui-text-quaternary)",
+        children: "Pick a pet as this agent’s profile picture.",
       }),
       jsx(Input, {
-        className: 'h-7 text-xs',
+        className: "h-7 text-xs",
         placeholder: `Search ${pets.length} pets…`,
         value: query,
-        onChange: event => {
-          setQuery(event.target.value)
-          setLimit(24)
-        }
+        onChange: (event) => {
+          setQuery(event.target.value);
+          setLimit(24);
+        },
       }),
       image && selectedSlug
         ? jsx(Button, {
-            type: 'button',
-            variant: 'ghost',
-            size: 'sm',
-            className: 'justify-center',
+            type: "button",
+            variant: "ghost",
+            size: "sm",
+            className: "justify-center",
             onClick: () => {
-              setSelectedSlug(null)
-              onImage(null)
+              setSelectedSlug(null);
+              onImage(null);
             },
-            children: 'Remove — back to shape avatar'
+            children: "Remove — back to shape avatar",
           })
         : null,
       filtered.length === 0
-        ? jsx('div', {
-            className: 'py-3 text-center text-xs text-(--ui-text-quaternary)',
-            children: 'No pets match.'
+        ? jsx("div", {
+            className: "py-3 text-center text-xs text-(--ui-text-quaternary)",
+            children: "No pets match.",
           })
-        : jsxs('div', {
+        : jsxs("div", {
             onScroll,
-            style: { maxHeight: 220, overflowY: 'auto' },
+            style: { maxHeight: 220, overflowY: "auto" },
             children: [
-              jsx('div', {
+              jsx("div", {
                 style: {
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                  gap: '6px'
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: "6px",
                 },
-                children: visible.map(pet =>
+                children: visible.map((pet) =>
                   jsxs(
-                    'button',
+                    "button",
                     {
-                      type: 'button',
+                      type: "button",
                       className: cn(
-                        'grid justify-items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-(--chrome-action-hover)',
-                        selectedSlug === pet.slug && 'ring-1 ring-(--ui-accent)'
+                        "grid justify-items-center gap-1 rounded-md p-1.5 transition-colors hover:bg-(--chrome-action-hover)",
+                        selectedSlug === pet.slug &&
+                          "ring-1 ring-(--ui-accent)",
                       ),
                       onClick: () => {
                         // The pet IS the profile picture: extract frame 0
                         // and hand it to the dialog as the avatar image.
                         // Persisted when the user hits Save.
-                        setSelectedSlug(pet.slug)
-                        void petFrameIcon(pet.spritesheetUrl).then(icon => {
+                        setSelectedSlug(pet.slug);
+                        void petFrameIcon(pet.spritesheetUrl).then((icon) => {
                           if (icon) {
-                            onImage(icon)
+                            onImage(icon);
                           } else {
-                            setSelectedSlug(null)
-                            host.notify({ kind: 'error', message: 'Could not load that pet — try another.' })
+                            setSelectedSlug(null);
+                            host.notify({
+                              kind: "error",
+                              message: "Could not load that pet — try another.",
+                            });
                           }
-                        })
+                        });
                       },
                       children: [
-                        jsx(PetThumb, { spriteUrl: pet.spritesheetUrl, size: 40 }),
-                        jsx('span', {
-                          className: 'w-full truncate text-center text-[0.6rem] text-(--ui-text-tertiary)',
-                          children: pet.displayName
-                        })
-                      ]
+                        jsx(PetThumb, {
+                          spriteUrl: pet.spritesheetUrl,
+                          size: 40,
+                        }),
+                        jsx("span", {
+                          className:
+                            "w-full truncate text-center text-[0.6rem] text-(--ui-text-tertiary)",
+                          children: pet.displayName,
+                        }),
+                      ],
                     },
-                    pet.slug
-                  )
-                )
+                    pet.slug,
+                  ),
+                ),
               }),
               limit < ranked.length
-                ? jsx('div', {
-                    className: 'py-2 text-center text-[0.65rem] text-(--ui-text-quaternary)',
-                    children: `Scroll for more (${limit} of ${ranked.length})`
+                ? jsx("div", {
+                    className:
+                      "py-2 text-center text-[0.65rem] text-(--ui-text-quaternary)",
+                    children: `Scroll for more (${limit} of ${ranked.length})`,
                   })
-                : null
-            ]
-          })
-    ]
-  })
+                : null,
+            ],
+          }),
+    ],
+  });
 }
 
 // ── data ─────────────────────────────────────────────────────────────────────
@@ -1429,26 +1759,28 @@ function PetTab({ image, onImage }) {
 function useRoster() {
   return useQuery({
     queryKey: ROSTER_KEY,
-    queryFn: () => host.request('profiles.list', {}),
+    queryFn: () => host.request("profiles.list", {}),
     refetchInterval: 5000,
     staleTime: 5000,
     // Remote (SSH) gateways connect slowly and drop on sleep/wake; keep
     // retrying instead of latching a terminal error card.
     retry: true,
-    retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)
-  })
+    retryDelay: (attempt) => Math.min(15000, 1000 * 2 ** attempt),
+  });
 }
 
 /** The @handle users tag a bot with. The primary profile's callable alias
  *  is 'hermes' — the mention middleware resolves it back to 'default' — so
  *  the word 'default' never surfaces in the UI. */
 function botHandle(name) {
-  return (name || '').trim().toLowerCase() === 'default' ? 'hermes' : name
+  return (name || "").trim().toLowerCase() === "default" ? "hermes" : name;
 }
 
 function showsHandle(name, meta) {
-  const display = displayName({ name }, meta)
-  return Boolean(name && display.toLowerCase() !== botHandle(name).toLowerCase())
+  const display = displayName({ name }, meta);
+  return Boolean(
+    name && display.toLowerCase() !== botHandle(name).toLowerCase(),
+  );
 }
 
 // ── canonical bot chat ───────────────────────────────────────────────────────
@@ -1467,33 +1799,36 @@ function showsHandle(name, meta) {
 
 // In-flight creations, keyed by bot name — double-clicking a row must not
 // mint two canonical chats.
-const canonicalCreations = new Map()
+const canonicalCreations = new Map();
 
 /** Create the bot's ONE forever chat: a real session opened with a kickoff
  *  message (the gateway prunes zero-message sessions, so the chat is born
  *  with the bot introducing itself). Pins the stored id in bot meta and
  *  returns it. */
 function createCanonicalChat(name) {
-  const inflight = canonicalCreations.get(name)
+  const inflight = canonicalCreations.get(name);
 
   if (inflight) {
-    return inflight
+    return inflight;
   }
 
   const run = (async () => {
-    const res = await host.request('session.create', { profile: name, title: 'Bot Chat' })
-    const sid = res?.stored_session_id
-    const runtime = res?.session_id
+    const res = await host.request("session.create", {
+      profile: name,
+      title: "Bot Chat",
+    });
+    const sid = res?.stored_session_id;
+    const runtime = res?.session_id;
 
     if (sid) {
-      saveBotMeta(name, { chat: sid })
+      saveBotMeta(name, { chat: sid });
     }
 
     // Mount the session view FIRST, then send the kickoff — submitting into
     // an unmounted session left the intro reply invisible until reopen.
-    if (sid && typeof host.openSession === 'function') {
+    if (sid && typeof host.openSession === "function") {
       try {
-        await host.openSession(sid, { profile: name })
+        await host.openSession(sid, { profile: name });
       } catch {
         // Navigation failure doesn't block the kickoff.
       }
@@ -1502,237 +1837,266 @@ function createCanonicalChat(name) {
     if (runtime) {
       window.setTimeout(() => {
         void host
-          .request('prompt.submit', { session_id: runtime, text: 'Hey, tell me about yourself!' })
-          .catch(() => undefined)
-      }, 400)
+          .request("prompt.submit", {
+            session_id: runtime,
+            text: "Hey, tell me about yourself!",
+          })
+          .catch(() => undefined);
+      }, 400);
     }
 
-    return sid || null
-  })().finally(() => canonicalCreations.delete(name))
+    return sid || null;
+  })().finally(() => canonicalCreations.delete(name));
 
-  canonicalCreations.set(name, run)
+  canonicalCreations.set(name, run);
 
-  return run
+  return run;
 }
 
 function displayName(bot, meta) {
   if (meta?.title?.trim()) {
-    return meta.title.trim()
+    return meta.title.trim();
   }
 
   // The primary profile is literally named "default" — as a bot identity
   // that reads like nobody bothered. Present it as Hermes (the agent it is)
   // unless the user gives it a real title.
-  if ((bot.name || '').trim().toLowerCase() === 'default' && !bot.title) {
-    return 'Hermes'
+  if ((bot.name || "").trim().toLowerCase() === "default" && !bot.title) {
+    return "Hermes";
   }
 
-  const raw = (bot.title || bot.name || '').replace(/[-_]+/g, ' ').trim()
-  return raw.replace(/\b\w/g, ch => ch.toUpperCase())
+  const raw = (bot.title || bot.name || "").replace(/[-_]+/g, " ").trim();
+  return raw.replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
 function slugify(value) {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64)
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
 }
 
 /** The agent-to-agent messaging protocol, reusable so a CUSTOM SOUL keeps
  *  the handoff protocol too — a custom SOUL used to silently drop it,
  *  breaking @mentions for customized bots (@wesleysimplicio, #16). */
 function messagingProtocolSection(name, roster) {
-  const teammates = (roster || []).filter(b => b.name !== name)
-
+  const teammates = (roster || []).filter((b) => b.name !== name);
+  // Prefix shown to LLMs — the <agent-name> and "your message" are placeholders
+  // for the agent to fill; the real -q value is built with JSON.stringify at call time.
+  const safeName = NAME_RE.test(name) ? name : "agent";
+  const examplePrefix = `Message from \uD83E\uDD16 ${safeName} (@${safeName}): `;
   return [
-    '## Messaging other agents',
-    '',
-    'You work alongside other named agents. Every agent (including you) has',
+    "## Messaging other agents",
+    "",
+    "You work alongside other named agents. Every agent (including you) has",
     'ONE canonical conversation titled "Bot Chat" — created with the agent,',
-    'so it always exists. Agent-to-agent messages are delivered straight',
-    'into it, like a DM. To message a teammate, run:',
-    '',
-    '```',
-    'hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + name + ' (@' + name + '): your message"',
-    '',
-    'Run the send with background=true and notify_on_complete=true on the',
-    'terminal tool, then finish your turn — the reply arrives later as a',
-    'background process notification. Never block waiting for it.',
-    '```',
-    '',
+    "so it always exists. Agent-to-agent messages are delivered straight",
+    "into it, like a DM. To message a teammate, run:",
+    "",
+    "```",
+    `hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q ${JSON.stringify(examplePrefix + "your message")}`,
+    "",
+    "Run the send with background=true and notify_on_complete=true on the",
+    "terminal tool, then finish your turn — the reply arrives later as a",
+    "background process notification. Never block waiting for it.",
+    "```",
+    "",
     '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
-    'workspace. `-Q` keeps output clean. Always open with the',
-    '"Message from \uD83E\uDD16 ' + name + ' (@' + name + '):" prefix so they know',
-    'who is talking (the @handle lets the app show your avatar to them).',
-    'Their reply prints to stdout — relay the relevant part back to the',
-    'user, and say which agent it came from. In the rare case the target',
+    "workspace. `-Q` keeps output clean. Always open with the",
+    `${JSON.stringify(examplePrefix)} prefix so they know`,
+    "who is talking (the @handle lets the app show your avatar to them).",
+    "Their reply prints to stdout — relay the relevant part back to the",
+    "user, and say which agent it came from. In the rare case the target",
     'has no "Bot Chat" yet, send once WITHOUT -c, then',
     '`hermes -p <agent-name> sessions rename <session-id> "Bot Chat"`.)',
-    '',
+    "",
     'If a message in YOUR chat starts with "Message from \uD83E\uDD16 <name>", it is',
-    'a teammate messaging you, not the user. Answer it directly — your reply',
-    'reaches them via their own delivery — and use the same command if you',
-    'need to start a conversation yourself.',
-    '',
+    "a teammate messaging you, not the user. Answer it directly — your reply",
+    "reaches them via their own delivery — and use the same command if you",
+    "need to start a conversation yourself.",
+    "",
     'When the user writes @<agent-name> or says "ask <name> to ..." /',
     '"tell <name> ...", that is a handoff: message that agent, wait for the',
-    'reply, and report back.',
-    '',
-    'The roster grows over time — run `hermes profiles list` for the LIVE',
-    'teammate list before a handoff. Teammates when you were created:',
+    "reply, and report back.",
+    "",
+    "The roster grows over time — run `hermes profiles list` for the LIVE",
+    "teammate list before a handoff. Teammates when you were created:",
     ...(teammates.length
-      ? teammates.map(b => `- \`${b.name}\`${b.description ? ` — ${b.description}` : ''}`)
-      : ['- (none yet)'])
-  ].join('\n')
+      ? teammates.map(
+          (b) => `- \`${b.name}\`${b.description ? ` — ${b.description}` : ""}`,
+        )
+      : ["- (none yet)"]),
+  ].join("\n");
 }
 
 /** SOUL.md for a new bot: identity (or the user's custom SOUL) + the
  *  messaging protocol, which ALWAYS ships. */
 function composeSoul({ name, title, description, roster, customSoul }) {
   if (customSoul && customSoul.trim()) {
-    return customSoul.trim() + '\n\n' + messagingProtocolSection(name, roster)
+    return customSoul.trim() + "\n\n" + messagingProtocolSection(name, roster);
   }
 
   const lines = [
     `# ${displayName({ name, title })}`,
-    '',
+    "",
     title ? `**Role:** ${title}` : null,
     description ? `**Mission:** ${description}` : null,
-    '',
+    "",
     `You are ${displayName({ name, title })}, a persistent named agent (profile \`${name}\`) on this machine.`,
-    'You keep your own memory, skills, and conversation history across sessions.'
-  ]
+    "You keep your own memory, skills, and conversation history across sessions.",
+  ];
 
-  return lines.filter(line => line !== null).join('\n') + '\n\n' + messagingProtocolSection(name, roster)
+  return (
+    lines.filter((line) => line !== null).join("\n") +
+    "\n\n" +
+    messagingProtocolSection(name, roster)
+  );
 }
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
 function BotRow({ bot, onEdit }) {
-  const activeProfile = useValue(host.state.profile)
-  const meta = useValue($botMeta)[bot.name]
-  const last = bot.last_session
-  const isActive = bot.name === activeProfile
-  const { shape, color, image } = botAppearance(bot.name, meta)
+  const activeProfile = useValue(host.state.profile);
+  const meta = useValue($botMeta)[bot.name];
+  const last = bot.last_session;
+  const isActive = bot.name === activeProfile;
+  const { shape, color, image } = botAppearance(bot.name, meta);
   // Reactive eyes: scan while this bot's backend is running a turn in the
   // active window; calm otherwise. gatewayState is app-wide, so scope to the
   // active profile's row only.
-  const gatewayState = useValue(host.state.gateway)
-  const botMood = isActive && gatewayState === 'busy' ? 'work' : 'idle'
-  const unread = Boolean(useValue($botUnread)[bot.name])
+  const gatewayState = useValue(host.state.gateway);
+  const botMood = isActive && gatewayState === "busy" ? "work" : "idle";
+  const unread = Boolean(useValue($botUnread)[bot.name]);
 
   const open = async () => {
-    haptic('tap')
-    $selectedBot.set(bot.name)
+    haptic("tap");
+    $selectedBot.set(bot.name);
 
     if ($botUnread.get()[bot.name]) {
-      const next = { ...$botUnread.get() }
-      delete next[bot.name]
-      $botUnread.set(next)
+      const next = { ...$botUnread.get() };
+      delete next[bot.name];
+      $botUnread.set(next);
     }
 
-    let id = meta?.chat
+    let id = meta?.chat || meta?.chat_pin || null;
 
     if (id) {
       // Recovery: compaction rewrites lineage ids. If the pin no longer
       // resolves, follow the lineage to the newest session that CONTINUES
       // this chat; if the whole lineage is gone, mint a fresh canonical.
       try {
-        const res = await host.request('session.list', { profile: bot.name, limit: 100 })
-        const rows = res?.sessions ?? []
+        const res = await host.request("session.list", {
+          profile: bot.name,
+          limit: 100,
+        });
+        const rows = res?.sessions ?? [];
 
-        if (rows.length && !rows.some(s => s.id === id)) {
-          id = rows[0].id
-          saveBotMeta(bot.name, { chat: id })
+        if (rows.length && !rows.some((s) => s.id === id)) {
+          id = rows[0].id;
+          saveBotMeta(bot.name, { chat: id });
         }
       } catch {
         // Gateway hiccup — try the pin as-is.
       }
     } else {
       try {
-        id = await createCanonicalChat(bot.name)
+        id = await createCanonicalChat(bot.name);
 
         // createCanonicalChat already opened the fresh session.
-        return
+        return;
       } catch {
-        id = null
+        id = null;
       }
     }
 
-    if (id && typeof host.openSession === 'function') {
-      void host.openSession(id, { profile: bot.name })
-    } else if (typeof host.newChat === 'function') {
+    if (id && typeof host.openSession === "function") {
+      void host.openSession(id, { profile: bot.name });
+    } else if (typeof host.newChat === "function") {
       // Older gateway without profile-scoped session.create — plain draft.
-      host.newChat(bot.name)
+      host.newChat(bot.name);
     } else {
-      host.navigate('/')
+      host.navigate("/");
     }
-  }
+  };
 
-  const row = jsxs('button', {
-    type: 'button',
+  const row = jsxs("button", {
+    type: "button",
     onClick: open,
     className: cn(
-      'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
-      'hover:bg-(--chrome-action-hover)',
-      isActive && 'bg-(--chrome-action-hover)'
+      "flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors",
+      "hover:bg-(--chrome-action-hover)",
+      isActive && "bg-(--chrome-action-hover)",
     ),
     children: [
-      jsx('div', {
-        className: 'shrink-0',
-        children: jsx(BotFace, { shape, color, image, size: 34, name: bot.name, mood: botMood })
+      jsx("div", {
+        className: "shrink-0",
+        children: jsx(BotFace, {
+          shape,
+          color,
+          image,
+          size: 34,
+          name: bot.name,
+          mood: botMood,
+        }),
       }),
-      jsxs('div', {
-        className: 'min-w-0 flex-1',
+      jsxs("div", {
+        className: "min-w-0 flex-1",
         children: [
-          jsxs('div', {
-            className: 'flex items-baseline justify-between gap-2',
+          jsxs("div", {
+            className: "flex items-baseline justify-between gap-2",
             children: [
-              jsxs('div', {
-                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+              jsxs("div", {
+                className: "flex min-w-0 items-baseline gap-1.5 truncate",
                 children: [
                   meta?.pinned
-                    ? jsx('span', {
-                        className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                        title: 'Pinned',
-                        children: '📌'
+                    ? jsx("span", {
+                        className:
+                          "shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)",
+                        title: "Pinned",
+                        children: "📌",
                       })
                     : null,
-                  jsx('span', {
-                    className: 'truncate text-[0.8125rem] font-medium',
-                    children: displayName(bot, meta)
+                  jsx("span", {
+                    className: "truncate text-[0.8125rem] font-medium",
+                    children: displayName(bot, meta),
                   }),
                   showsHandle(bot.name, meta)
-                    ? jsx('span', {
-                        className: 'shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)',
-                        children: `@${botHandle(bot.name)}`
+                    ? jsx("span", {
+                        className:
+                          "shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)",
+                        children: `@${botHandle(bot.name)}`,
                       })
-                    : null
-                ]
+                    : null,
+                ],
               }),
               unread
-                ? jsx('span', {
-                    className: 'size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)',
-                    'aria-label': 'unread'
+                ? jsx("span", {
+                    className:
+                      "size-2 shrink-0 rounded-full bg-(--ui-accent,#4f9cf9)",
+                    "aria-label": "unread",
                   })
                 : null,
               last
-                ? jsx('span', {
-                    className: 'shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)',
-                    children: relativeTime(last.last_active * 1000)
+                ? jsx("span", {
+                    className:
+                      "shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)",
+                    children: relativeTime(last.last_active * 1000),
                   })
-                : null
-            ]
+                : null,
+            ],
           }),
-          jsx('div', {
-            className: 'truncate text-xs text-(--ui-text-tertiary)',
-            children: last?.preview || bot.description || 'No conversations yet — say hi'
-          })
-        ]
-      })
-    ]
-  })
+          jsx("div", {
+            className: "truncate text-xs text-(--ui-text-tertiary)",
+            children:
+              last?.preview ||
+              bot.description ||
+              "No conversations yet — say hi",
+          }),
+        ],
+      }),
+    ],
+  });
 
   return jsxs(ContextMenu, {
     children: [
@@ -1741,55 +2105,64 @@ function BotRow({ bot, onEdit }) {
         children: [
           jsx(ContextMenuItem, {
             onSelect: () => {
-              const pinned = Boolean($botMeta.get()[bot.name]?.pinned)
-              saveBotMeta(bot.name, { pinned: !pinned })
+              const pinned = Boolean($botMeta.get()[bot.name]?.pinned);
+              saveBotMeta(bot.name, { pinned: !pinned });
               host.notify({
-                kind: 'info',
-                message: `${displayName(bot, meta)} ${pinned ? 'unpinned' : 'pinned to top'}`
-              })
+                kind: "info",
+                message: `${displayName(bot, meta)} ${pinned ? "unpinned" : "pinned to top"}`,
+              });
             },
-            children: meta?.pinned ? 'Unpin' : 'Pin to top'
+            children: meta?.pinned ? "Unpin" : "Pin to top",
           }),
           jsx(ContextMenuSeparator, {}),
-          jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
+          jsx(ContextMenuItem, {
+            onSelect: () => onEdit(bot),
+            children: "Edit Profile",
+          }),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
+              host.notify({
+                kind: "info",
+                message: `Duplicating ${displayName(bot, meta)}…`,
+              });
               duplicateBot(bot, $lastRoster.get())
-                .then(name => {
-                  queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
-                  host.notify({ kind: 'success', message: `Created ${name} — full copy of ${bot.name}` })
+                .then((name) => {
+                  queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
+                  host.notify({
+                    kind: "success",
+                    message: `Created ${name} — full copy of ${bot.name}`,
+                  });
                 })
-                .catch(err => host.notifyError(err, 'Duplicate failed'))
+                .catch((err) => host.notifyError(err, "Duplicate failed"));
             },
-            children: 'Duplicate'
+            children: "Duplicate",
           }),
           jsx(ContextMenuSeparator, {}),
           jsx(ContextMenuItem, {
             onSelect: () => {
-              $selectedBot.set(bot.name)
+              $selectedBot.set(bot.name);
 
-              if (typeof host.newChat === 'function') {
-                host.newChat(bot.name)
+              if (typeof host.newChat === "function") {
+                host.newChat(bot.name);
               }
             },
-            children: 'New chat with this agent'
-          })
-        ]
-      })
-    ]
-  })
+            children: "New chat with this agent",
+          }),
+        ],
+      }),
+    ],
+  });
 }
 
 // ── model picker (provider/model dropdowns via model.options) ───────────────
 
 function useModelOptions() {
   return useQuery({
-    queryKey: [ID, 'model-options'],
-    queryFn: () => host.request('model.options', {}),
+    queryKey: [ID, "model-options"],
+    queryFn: () => host.request("model.options", {}),
     staleTime: 120000,
-    retry: false
-  })
+    retry: false,
+  });
 }
 
 /**
@@ -1798,106 +2171,136 @@ function useModelOptions() {
  * onChange receives the merged patch. Older gateways (no model.options)
  * degrade to the previous free-text inputs.
  */
-function ModelPicker({ value, onChange, placeholderModel = 'gateway default' }) {
-  const { data, isLoading, error } = useModelOptions()
+function ModelPicker({
+  value,
+  onChange,
+  placeholderModel = "gateway default",
+}) {
+  const { data, isLoading, error } = useModelOptions();
 
   if (isLoading) {
-    return jsx('div', {
-      className: 'flex justify-center py-2',
-      children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
-    })
+    return jsx("div", {
+      className: "flex justify-center py-2",
+      children: jsx(GlyphSpinner, {
+        spinner: "breathe",
+        className: "text-(--ui-text-tertiary)",
+      }),
+    });
   }
 
-  const providers = (data?.providers || []).filter(p => (p.models || []).length)
+  const providers = (data?.providers || []).filter(
+    (p) => (p.models || []).length,
+  );
 
   if (error || !providers.length) {
     // Fallback: free text (older gateway or empty inventory).
-    return jsxs('div', {
-      style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
+    return jsxs("div", {
+      style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" },
       children: [
         labeled(
-          'Provider',
+          "Provider",
           jsx(Input, {
-            placeholder: 'nous / openrouter \u2026',
+            placeholder: "nous / openrouter \u2026",
             value: value.provider,
-            onChange: event => onChange({ provider: event.target.value })
-          })
+            onChange: (event) => onChange({ provider: event.target.value }),
+          }),
         ),
         labeled(
-          'Model',
+          "Model",
           jsx(Input, {
-            placeholder: 'anthropic/claude-fable-5',
+            placeholder: "anthropic/claude-fable-5",
             value: value.model,
-            onChange: event => onChange({ model: event.target.value })
-          })
-        )
-      ]
-    })
+            onChange: (event) => onChange({ model: event.target.value }),
+          }),
+        ),
+      ],
+    });
   }
 
-  const NONE = '__default__'
-  const activeProvider = providers.find(p => p.slug === value.provider) || null
-  const models = activeProvider ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id)) : []
+  const NONE = "__default__";
+  const activeProvider =
+    providers.find((p) => p.slug === value.provider) || null;
+  const models = activeProvider
+    ? (activeProvider.models || []).map((m) =>
+        typeof m === "string" ? m : m.id,
+      )
+    : [];
 
-  return jsxs('div', {
-    style: { display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '10px' },
+  return jsxs("div", {
+    style: { display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: "10px" },
     children: [
       labeled(
-        'Provider',
+        "Provider",
         jsxs(Select, {
           value: value.provider || NONE,
-          onValueChange: v => {
+          onValueChange: (v) => {
             if (v === NONE) {
-              onChange({ provider: '', model: '' })
+              onChange({ provider: "", model: "" });
             } else {
-              const prov = providers.find(p => p.slug === v)
-              const first = prov?.models?.[0]
+              const prov = providers.find((p) => p.slug === v);
+              const first = prov?.models?.[0];
               onChange({
                 provider: v,
                 // Keep the model if it exists under the new provider,
                 // otherwise preselect that provider's first model.
                 model:
-                  prov && (prov.models || []).some(m => (typeof m === 'string' ? m : m.id) === value.model)
+                  prov &&
+                  (prov.models || []).some(
+                    (m) => (typeof m === "string" ? m : m.id) === value.model,
+                  )
                     ? value.model
-                    : typeof first === 'string'
+                    : typeof first === "string"
                       ? first
-                      : first?.id || ''
-              })
+                      : first?.id || "",
+              });
             }
           },
           children: [
-            jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+            jsx(SelectTrigger, {
+              className: "h-8 rounded-md",
+              children: jsx(SelectValue, {}),
+            }),
             jsxs(SelectContent, {
               children: [
-                jsx(SelectItem, { value: NONE, children: 'Inherit (launch profile)' }),
-                ...providers.map(p => jsx(SelectItem, { value: p.slug, children: p.slug }, p.slug))
-              ]
-            })
-          ]
-        })
+                jsx(SelectItem, {
+                  value: NONE,
+                  children: "Inherit (launch profile)",
+                }),
+                ...providers.map((p) =>
+                  jsx(SelectItem, { value: p.slug, children: p.slug }, p.slug),
+                ),
+              ],
+            }),
+          ],
+        }),
       ),
       labeled(
-        'Model',
+        "Model",
         activeProvider
           ? jsxs(Select, {
-              value: value.model || (models[0] ?? ''),
-              onValueChange: v => onChange({ model: v }),
+              value: value.model || (models[0] ?? ""),
+              onValueChange: (v) => onChange({ model: v }),
               children: [
-                jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+                jsx(SelectTrigger, {
+                  className: "h-8 rounded-md",
+                  children: jsx(SelectValue, {}),
+                }),
                 jsx(SelectContent, {
-                  children: models.map(m => jsx(SelectItem, { value: m, children: m }, m))
-                })
-              ]
+                  children: models.map((m) =>
+                    jsx(SelectItem, { value: m, children: m }, m),
+                  ),
+                }),
+              ],
             })
           : jsx(Input, {
               disabled: true,
               placeholder: placeholderModel,
-              value: '',
-              onChange: () => undefined
-            })
-      )
-    ]
-  })
+              value: "",
+              onChange: () => undefined,
+            }),
+      ),
+    ],
+  });
 }
 
 // ── advanced profile config (skills / toolsets / model / SOUL) ──────────────
@@ -1907,235 +2310,284 @@ function ModelPicker({ value, onChange, placeholderModel = 'gateway default' }) 
 // profiles.describe / profiles.configure; feature-detects older gateways.
 
 function CheckList({ items, onToggle, columns = 2 }) {
-  return jsx('div', {
+  return jsx("div", {
     style: {
-      display: 'grid',
+      display: "grid",
       gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-      gap: '2px 12px'
+      gap: "2px 12px",
     },
-    children: items.map(item =>
+    children: items.map((item) =>
       jsxs(
-        'label',
+        "label",
         {
-          className: 'flex min-w-0 cursor-pointer items-center gap-1.5 py-0.5 text-xs text-(--ui-text-secondary)',
+          className:
+            "flex min-w-0 cursor-pointer items-center gap-1.5 py-0.5 text-xs text-(--ui-text-secondary)",
           title: item.description || item.name,
           children: [
             jsx(Checkbox, {
               checked: item.enabled,
-              onCheckedChange: value => onToggle(item.name, Boolean(value))
+              onCheckedChange: (value) => onToggle(item.name, Boolean(value)),
             }),
-            jsx('span', { className: 'truncate', children: item.name }),
+            jsx("span", { className: "truncate", children: item.name }),
             item.tool_count
-              ? jsx('span', {
-                  className: 'shrink-0 text-[0.6rem] text-(--ui-text-quaternary)',
-                  children: `${item.tool_count}`
+              ? jsx("span", {
+                  className:
+                    "shrink-0 text-[0.6rem] text-(--ui-text-quaternary)",
+                  children: `${item.tool_count}`,
                 })
-              : null
-          ]
+              : null,
+          ],
         },
-        item.name
-      )
-    )
-  })
+        item.name,
+      ),
+    ),
+  });
 }
 
 function AdvancedProfileConfig({ bot, state, setState }) {
-  const [loaded, setLoaded] = useState(false)
-  const [unsupported, setUnsupported] = useState(false)
-  const [skillFilter, setSkillFilter] = useState('')
+  const [unsupported, setUnsupported] = useState(false);
+  const [skillFilter, setSkillFilter] = useState("");
 
-  if (!loaded) {
-    setLoaded(true)
+  useEffect(() => {
+    let cancelled = false;
     Promise.all([
-      host.request('profiles.describe', { name: bot }),
-      host.request('mcp.catalog', { profile: bot }).catch(() => null)
+      host.request("profiles.describe", { name: bot }),
+      host.request("mcp.catalog", { profile: bot }).catch(() => null),
     ])
       .then(([res, cat]) => {
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
-        setState(prev => ({
+        if (cancelled) return;
+        const configured = res.mcp_servers || [];
+        const have = new Set(configured.map((m) => m.name));
+        const catalog = ((cat && cat.servers) || []).filter(
+          (s) => !have.has(s.name),
+        );
+        setState((prev) => ({
           ...prev,
-          provider: res.model?.provider || '',
-          model: res.model?.default || '',
-          soul: res.soul || '',
+          provider: res.model?.provider || "",
+          model: res.model?.default || "",
+          soul: res.soul || "",
           skills: res.skills || [],
           toolsets: res.toolsets || [],
           mcp: [
-            ...configured.map(m => ({ ...m, enabled: m.enabled !== false })),
-            ...catalog.map(s => ({
+            ...configured.map((m) => ({ ...m, enabled: m.enabled !== false })),
+            ...catalog.map((s) => ({
               name: s.name,
               enabled: false,
               fromCatalog: true,
               installed: s.installed,
               auth: s.auth,
               requires: s.requires || [],
-              description: s.description || ''
-            }))
+              description: s.description || "",
+            })),
           ],
-          loaded: true
-        }))
+          loaded: true,
+        }));
       })
-      .catch(() => setUnsupported(true))
-  }
+      .catch(() => {
+        if (!cancelled) setUnsupported(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bot]);
 
   if (unsupported) {
-    return jsx('div', {
-      className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-      children: 'Full configuration needs a newer gateway (restart it after updating Hermes).'
-    })
+    return jsx("div", {
+      className: "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
+      children:
+        "Full configuration needs a newer gateway (restart it after updating Hermes).",
+    });
   }
 
   if (!state.loaded) {
-    return jsx('div', {
-      className: 'flex justify-center py-4',
-      children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
-    })
+    return jsx("div", {
+      className: "flex justify-center py-4",
+      children: jsx(GlyphSpinner, {
+        spinner: "breathe",
+        className: "text-(--ui-text-tertiary)",
+      }),
+    });
   }
 
   const visibleSkills = skillFilter.trim()
-    ? state.skills.filter(s => s.name.toLowerCase().includes(skillFilter.trim().toLowerCase()))
-    : state.skills
+    ? state.skills.filter((s) =>
+        s.name.toLowerCase().includes(skillFilter.trim().toLowerCase()),
+      )
+    : state.skills;
 
   const toggleSkill = (name, enabled) =>
-    setState(prev => ({
+    setState((prev) => ({
       ...prev,
       dirtySkills: true,
-      skills: prev.skills.map(s => (s.name === name ? { ...s, enabled } : s))
-    }))
+      skills: prev.skills.map((s) => (s.name === name ? { ...s, enabled } : s)),
+    }));
 
   const toggleToolset = (name, enabled) =>
-    setState(prev => ({
+    setState((prev) => ({
       ...prev,
       dirtyToolsets: true,
-      toolsets: prev.toolsets.map(t => (t.name === name ? { ...t, enabled } : t))
-    }))
+      toolsets: prev.toolsets.map((t) =>
+        t.name === name ? { ...t, enabled } : t,
+      ),
+    }));
 
   const toggleMcp = (name, enabled) =>
-    setState(prev => ({
+    setState((prev) => ({
       ...prev,
       dirtyMcp: true,
-      mcp: (prev.mcp || []).map(m => (m.name === name ? { ...m, enabled } : m))
-    }))
+      mcp: (prev.mcp || []).map((m) =>
+        m.name === name ? { ...m, enabled } : m,
+      ),
+    }));
 
-  const enabledSkills = state.skills.filter(s => s.enabled).length
-  const enabledToolsets = state.toolsets.filter(t => t.enabled).length
-  const mcpList = state.mcp || []
-  const enabledMcp = mcpList.filter(m => m.enabled).length
+  const enabledSkills = state.skills.filter((s) => s.enabled).length;
+  const enabledToolsets = state.toolsets.filter((t) => t.enabled).length;
+  const mcpList = state.mcp || [];
+  const enabledMcp = mcpList.filter((m) => m.enabled).length;
 
-  return jsxs('div', {
-    className: 'grid gap-4',
+  return jsxs("div", {
+    className: "grid gap-4",
     children: [
       jsx(ModelPicker, {
         value: { provider: state.provider, model: state.model },
-        onChange: patch => setState(prev => ({ ...prev, dirtyModel: true, ...patch }))
+        onChange: (patch) =>
+          setState((prev) => ({ ...prev, dirtyModel: true, ...patch })),
       }),
       labeled(
         `Skills (${enabledSkills}/${state.skills.length} enabled)`,
-        jsxs('div', {
-          className: 'grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2',
+        jsxs("div", {
+          className:
+            "grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2",
           children: [
             jsx(Input, {
-              className: 'h-7 text-xs',
-              placeholder: 'Filter skills…',
+              className: "h-7 text-xs",
+              placeholder: "Filter skills…",
               value: skillFilter,
-              onChange: event => setSkillFilter(event.target.value)
+              onChange: (event) => setSkillFilter(event.target.value),
             }),
             jsx(ScrollArea, {
               style: { maxHeight: 180 },
-              children: jsx(CheckList, { items: visibleSkills, onToggle: toggleSkill, columns: 2 })
+              children: jsx(CheckList, {
+                items: visibleSkills,
+                onToggle: toggleSkill,
+                columns: 2,
+              }),
             }),
             jsx(HubSkillsSection, {
               forProfile: bot,
-              onInstalled: name =>
-                setState(prev =>
-                  prev.skills.some(s => s.name === name)
+              onInstalled: (name) =>
+                setState((prev) =>
+                  prev.skills.some((s) => s.name === name)
                     ? prev
-                    : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
-                )
-            })
-          ]
-        })
+                    : {
+                        ...prev,
+                        skills: [...prev.skills, { name, enabled: true }],
+                      },
+                ),
+            }),
+          ],
+        }),
       ),
       labeled(
         `Toolsets (${enabledToolsets}/${state.toolsets.length} enabled — unchecking all restores the default)`,
-        jsx('div', {
-          className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
+        jsx("div", {
+          className: "rounded-md border border-(--ui-stroke-secondary) p-2",
           children: jsx(ScrollArea, {
             style: { maxHeight: 160 },
-            children: jsx(CheckList, { items: state.toolsets, onToggle: toggleToolset, columns: 2 })
-          })
-        })
+            children: jsx(CheckList, {
+              items: state.toolsets,
+              onToggle: toggleToolset,
+              columns: 2,
+            }),
+          }),
+        }),
       ),
       labeled(
         `MCP servers (${enabledMcp}/${mcpList.length} enabled)`,
-        jsx('div', {
-          className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
-          children: mcpList.length === 0
-            ? jsx('div', {
-                className: 'px-1 py-2 text-center text-xs text-(--ui-text-tertiary)',
-                children: 'No MCP servers configured or in the catalog.'
-              })
-            : jsx(ScrollArea, {
-                style: { maxHeight: 180 },
-                children: jsx('div', {
-                  className: 'grid gap-1',
-                  children: mcpList.map(m => {
-                    const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
-                    return jsxs(
-                      'label',
-                      {
-                        className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
-                        children: [
-                          jsx(Checkbox, {
-                            checked: !!m.enabled,
-                            disabled: needsSetup,
-                            onCheckedChange: value => toggleMcp(m.name, Boolean(value))
-                          }),
-                          jsxs('span', {
-                            className: 'min-w-0',
-                            children: [
-                              jsx('span', { children: m.name }),
-                              m.fromCatalog && !needsSetup
-                                ? jsx('span', {
-                                    className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-                                    children: m.installed ? 'catalog · installed' : 'catalog'
-                                  })
-                                : null,
-                              needsSetup
-                                ? jsx(McpSetupButton, {
-                                    profile: bot,
-                                    entry: m,
-                                    onDone: () => toggleMcp(m.name, true)
-                                  })
-                                : null,
-                              m.description
-                                ? jsx('div', {
-                                    className: 'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                    children: m.description
-                                  })
-                                : null
-                            ]
-                          })
-                        ]
-                      },
-                      m.name
-                    )
-                  })
+        jsx("div", {
+          className: "rounded-md border border-(--ui-stroke-secondary) p-2",
+          children:
+            mcpList.length === 0
+              ? jsx("div", {
+                  className:
+                    "px-1 py-2 text-center text-xs text-(--ui-text-tertiary)",
+                  children: "No MCP servers configured or in the catalog.",
                 })
-              })
-        })
+              : jsx(ScrollArea, {
+                  style: { maxHeight: 180 },
+                  children: jsx("div", {
+                    className: "grid gap-1",
+                    children: mcpList.map((m) => {
+                      const needsSetup =
+                        m.fromCatalog &&
+                        !m.installed &&
+                        ((m.requires || []).length > 0 ||
+                          (m.auth || "").toLowerCase() === "oauth");
+                      return jsxs(
+                        "label",
+                        {
+                          className:
+                            "flex items-start gap-2 text-xs text-(--ui-text-secondary)",
+                          children: [
+                            jsx(Checkbox, {
+                              checked: !!m.enabled,
+                              disabled: needsSetup,
+                              onCheckedChange: (value) =>
+                                toggleMcp(m.name, Boolean(value)),
+                            }),
+                            jsxs("span", {
+                              className: "min-w-0",
+                              children: [
+                                jsx("span", { children: m.name }),
+                                m.fromCatalog && !needsSetup
+                                  ? jsx("span", {
+                                      className:
+                                        "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
+                                      children: m.installed
+                                        ? "catalog · installed"
+                                        : "catalog",
+                                    })
+                                  : null,
+                                needsSetup
+                                  ? jsx(McpSetupButton, {
+                                      profile: bot,
+                                      entry: m,
+                                      onDone: () => toggleMcp(m.name, true),
+                                    })
+                                  : null,
+                                m.description
+                                  ? jsx("div", {
+                                      className:
+                                        "truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
+                                      children: m.description,
+                                    })
+                                  : null,
+                              ],
+                            }),
+                          ],
+                        },
+                        m.name,
+                      );
+                    }),
+                  }),
+                }),
+        }),
       ),
       labeled(
-        'SOUL.md (persona + agent-messaging protocol)',
+        "SOUL.md (persona + agent-messaging protocol)",
         jsx(Textarea, {
-          className: 'min-h-28 font-mono text-xs leading-5',
+          className: "min-h-28 font-mono text-xs leading-5",
           value: state.soul,
-          onChange: event => setState(prev => ({ ...prev, dirtySoul: true, soul: event.target.value }))
-        })
-      )
-    ]
-  })
+          onChange: (event) =>
+            setState((prev) => ({
+              ...prev,
+              dirtySoul: true,
+              soul: event.target.value,
+            })),
+        }),
+      ),
+    ],
+  });
 }
 
 // ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
@@ -2145,255 +2597,282 @@ function AdvancedProfileConfig({ bot, state, setState }) {
 // the origin, install via skills.manage, and bubble onInstalled so the
 // checklist above gains the row. Search-box fallback kept for offline use.
 
-const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
-const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
+const HUB_ORIGIN = "https://hermes-agent.nousresearch.com";
+const HUB_PICKER_URL = HUB_ORIGIN + "/docs/skills?embed=picker";
 
 function HubSkillsSection({ forProfile, onInstalled }) {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState(null)
-  const [searching, setSearching] = useState(false)
-  const [installing, setInstalling] = useState(null)
-  const [installed, setInstalled] = useState({})
-  const [browseHub, setBrowseHub] = useState(false)
-  const installRef = useRef(null)
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [installing, setInstalling] = useState(null);
+  const [installed, setInstalled] = useState({});
+  const [browseHub, setBrowseHub] = useState(false);
+  const installRef = useRef(null);
 
   // Picker messages from the embedded hub page. Origin-checked; installs
   // route through the same install() the search fallback uses.
   useEffect(() => {
     if (!browseHub) {
-      return undefined
+      return undefined;
     }
 
-    const onMessage = event => {
+    const onMessage = (event) => {
       if (event.origin !== HUB_ORIGIN) {
-        return
+        return;
       }
 
-      const data = event.data
+      const data = event.data;
 
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
-        return
+      if (
+        !data ||
+        data.type !== "hermes-skill-pick" ||
+        typeof data.name !== "string" ||
+        !data.name.trim()
+      ) {
+        return;
       }
-
-      const target = String(data.identifier || data.name)
+      // Validate skill identifier shape — hub should only send well-formed names (e.g. "scope/skill" or "skill-name").
+      const rawName = data.name.trim().slice(0, 120);
+      const rawTarget = String(data.identifier || rawName)
+        .trim()
+        .slice(0, 120);
+      if (
+        !/^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)?$/i.test(rawName) ||
+        !/^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)?$/i.test(rawTarget)
+      ) {
+        return;
+      }
 
       if (installRef.current) {
-        void installRef.current(target, String(data.name))
+        void installRef.current(rawTarget, rawName);
       }
-    }
+    };
 
-    window.addEventListener('message', onMessage)
+    window.addEventListener("message", onMessage);
 
-    return () => window.removeEventListener('message', onMessage)
-  }, [browseHub])
+    return () => window.removeEventListener("message", onMessage);
+  }, [browseHub]);
 
   const search = async () => {
-    const q = query.trim()
+    const q = query.trim();
 
     if (!q || searching) {
-      return
+      return;
     }
 
-    setSearching(true)
-    setResults(null)
+    setSearching(true);
+    setResults(null);
 
     try {
-      const res = await host.request('skills.manage', { action: 'search', query: q })
-      setResults(res.results || [])
+      const res = await host.request("skills.manage", {
+        action: "search",
+        query: q,
+      });
+      setResults(res.results || []);
     } catch {
-      setResults([])
+      setResults([]);
     } finally {
-      setSearching(false)
+      setSearching(false);
     }
-  }
+  };
 
   const install = async (name, displayName) => {
-    const label = displayName || name
+    const label = displayName || name;
 
     if (installing) {
-      return
+      return;
     }
 
-    setInstalling(label)
+    setInstalling(label);
 
     try {
       // With forProfile the install lands in that bot's skills dir
       // (gateway skills.manage profile scoping); null = launch profile,
       // which is right at create time — the new bot clones/copies from it.
-      await host.request('skills.manage', {
-        action: 'install',
+      await host.request("skills.manage", {
+        action: "install",
         query: name,
-        ...(forProfile ? { profile: forProfile } : {})
-      })
-      setInstalled(prev => ({ ...prev, [label]: true }))
-      host.notify({ kind: 'success', message: `Skill "${label}" installed` })
+        ...(forProfile ? { profile: forProfile } : {}),
+      });
+      setInstalled((prev) => ({ ...prev, [label]: true }));
+      host.notify({ kind: "success", message: `Skill "${label}" installed` });
 
-      if (typeof onInstalled === 'function') {
-        onInstalled(label)
+      if (typeof onInstalled === "function") {
+        onInstalled(label);
       }
     } catch (err) {
-      host.notifyError(err, `Installing "${label}" failed`)
+      host.notifyError(err, `Installing "${label}" failed`);
     } finally {
-      setInstalling(null)
+      setInstalling(null);
     }
-  }
+  };
 
-  installRef.current = install
+  installRef.current = install;
 
-  return jsxs('div', {
-    className: 'grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2',
+  return jsxs("div", {
+    className: "grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2",
     children: [
-      jsxs('div', {
-        className: 'flex items-baseline justify-between gap-2',
+      jsxs("div", {
+        className: "flex items-baseline justify-between gap-2",
         children: [
-          jsx('div', {
-            className: 'text-[0.7rem] font-medium text-(--ui-text-secondary)',
-            children: 'Skills Hub'
+          jsx("div", {
+            className: "text-[0.7rem] font-medium text-(--ui-text-secondary)",
+            children: "Skills Hub",
           }),
-          jsx('button', {
-            type: 'button',
-            className: 'text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)',
-            onClick: () => setBrowseHub(v => !v),
-            children: browseHub ? 'hide the hub browser' : 'browse the full hub ▾'
-          })
-        ]
+          jsx("button", {
+            type: "button",
+            className:
+              "text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)",
+            onClick: () => setBrowseHub((v) => !v),
+            children: browseHub
+              ? "hide the hub browser"
+              : "browse the full hub ▾",
+          }),
+        ],
       }),
       browseHub
-        ? jsxs('div', {
-            className: 'grid gap-1',
+        ? jsxs("div", {
+            className: "grid gap-1",
             children: [
               // Resizable viewport: native CSS resize handle (bottom-right
               // corner) lets the user drag it larger/smaller. The iframe
               // inside is rendered oversized and scaled DOWN (133% × 0.75)
               // so the hub page starts zoomed out — we can't style the
               // cross-origin page itself, but scaling the frame is ours.
-              jsx('div', {
+              jsx("div", {
                 style: {
-                  width: '100%',
+                  width: "100%",
                   height: 560,
                   minHeight: 240,
                   minWidth: 320,
-                  maxWidth: '100%',
-                  resize: 'both',
-                  overflow: 'hidden',
-                  border: '1px solid var(--ui-stroke-secondary)',
+                  maxWidth: "100%",
+                  resize: "both",
+                  overflow: "hidden",
+                  border: "1px solid var(--ui-stroke-secondary)",
                   borderRadius: 8,
-                  position: 'relative'
+                  position: "relative",
                 },
-                children: jsx('iframe', {
+                children: jsx("iframe", {
                   src: HUB_PICKER_URL,
-                  title: 'Hermes Skills Hub',
+                  title: "Hermes Skills Hub",
                   style: {
-                    width: '133.34%',
-                    height: '133.34%',
-                    border: 'none',
-                    background: 'transparent',
-                    transform: 'scale(0.75)',
-                    transformOrigin: 'top left'
+                    width: "133.34%",
+                    height: "133.34%",
+                    border: "none",
+                    background: "transparent",
+                    transform: "scale(0.75)",
+                    transformOrigin: "top left",
                   },
-                  sandbox: 'allow-scripts allow-same-origin'
-                })
+                  sandbox: "allow-scripts allow-same-origin",
+                }),
               }),
-              jsx('div', {
-                className: 'px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                children:
-                  installing
-                    ? `Installing "${installing}"…`
-                    : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'
-              })
-            ]
+              jsx("div", {
+                className:
+                  "px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
+                children: installing
+                  ? `Installing "${installing}"…`
+                  : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.',
+              }),
+            ],
           })
         : null,
-      jsxs('div', {
-        className: 'flex gap-1.5',
+      jsxs("div", {
+        className: "flex gap-1.5",
         children: [
           jsx(Input, {
-            className: 'h-7 flex-1 text-xs',
-            placeholder: 'Search the hub (community + well-known sources)…',
+            className: "h-7 flex-1 text-xs",
+            placeholder: "Search the hub (community + well-known sources)…",
             value: query,
-            onChange: event => setQuery(event.target.value),
-            onKeyDown: event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                void search()
+            onChange: (event) => setQuery(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void search();
               }
-            }
+            },
           }),
           jsx(Button, {
-            size: 'sm',
-            variant: 'secondary',
+            size: "sm",
+            variant: "secondary",
             disabled: searching || !query.trim(),
             onClick: () => void search(),
-            children: searching ? 'Searching…' : 'Search'
-          })
-        ]
+            children: searching ? "Searching…" : "Search",
+          }),
+        ],
       }),
       searching
-        ? jsx('div', {
-            className: 'px-1 text-[0.65rem] text-(--ui-text-quaternary)',
-            children: 'Searching community + well-known sources — can take ~10s…'
+        ? jsx("div", {
+            className: "px-1 text-[0.65rem] text-(--ui-text-quaternary)",
+            children:
+              "Searching community + well-known sources — can take ~10s…",
           })
         : null,
       results === null
         ? null
         : results.length === 0
-          ? jsx('div', {
-              className: 'px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)',
-              children: 'No hub skills matched.'
+          ? jsx("div", {
+              className:
+                "px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)",
+              children: "No hub skills matched.",
             })
           : jsx(ScrollArea, {
               style: { maxHeight: 150 },
-              children: jsx('div', {
-                className: 'grid gap-1',
-                children: results.map(r =>
+              children: jsx("div", {
+                className: "grid gap-1",
+                children: results.map((r) =>
                   jsxs(
-                    'div',
+                    "div",
                     {
-                      className: 'flex items-center gap-2 text-xs',
+                      className: "flex items-center gap-2 text-xs",
                       children: [
-                        jsxs('div', {
-                          className: 'min-w-0 flex-1',
+                        jsxs("div", {
+                          className: "min-w-0 flex-1",
                           children: [
-                            jsx('div', { className: 'truncate font-medium', children: r.name }),
+                            jsx("div", {
+                              className: "truncate font-medium",
+                              children: r.name,
+                            }),
                             r.description
-                              ? jsx('div', {
-                                  className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
-                                  children: r.description
+                              ? jsx("div", {
+                                  className:
+                                    "truncate text-[0.65rem] text-(--ui-text-quaternary)",
+                                  children: r.description,
                                 })
-                              : null
-                          ]
+                              : null,
+                          ],
                         }),
                         installed[r.name]
-                          ? jsx('span', {
-                              className: 'shrink-0 text-[0.65rem] text-(--ui-text-tertiary)',
-                              children: '✓ added'
+                          ? jsx("span", {
+                              className:
+                                "shrink-0 text-[0.65rem] text-(--ui-text-tertiary)",
+                              children: "✓ added",
                             })
                           : jsx(Button, {
-                              size: 'sm',
-                              variant: 'ghost',
-                              className: 'shrink-0 px-2 font-semibold',
+                              size: "sm",
+                              variant: "ghost",
+                              className: "shrink-0 px-2 font-semibold",
                               disabled: installing !== null,
                               title: `Install "${r.name}" and add it to the list above`,
                               onClick: () => void install(r.name),
-                              children: installing === r.name ? '…' : '+'
-                            })
-                      ]
+                              children: installing === r.name ? "…" : "+",
+                            }),
+                      ],
                     },
-                    r.name
-                  )
-                )
-              })
-            })
-    ]
-  })
+                    r.name,
+                  ),
+                ),
+              }),
+            }),
+    ],
+  });
 }
 
 function emptyAdvancedState() {
   return {
     loaded: false,
-    provider: '',
-    model: '',
-    soul: '',
+    provider: "",
+    model: "",
+    soul: "",
     skills: [],
     toolsets: [],
     mcp: [],
@@ -2401,154 +2880,197 @@ function emptyAdvancedState() {
     dirtySoul: false,
     dirtySkills: false,
     dirtyToolsets: false,
-    dirtyMcp: false
-  }
+    dirtyMcp: false,
+  };
 }
 
 /** Persist only the dirty sections of the advanced editor. */
 async function applyAdvancedConfig(bot, state) {
-  const payload = { name: bot }
+  const payload = { name: bot };
 
   if (state.dirtySoul) {
-    payload.soul = state.soul
+    payload.soul = state.soul;
   }
 
   if (state.dirtyModel && state.model.trim() && state.provider.trim()) {
-    payload.model = state.model.trim()
-    payload.provider = state.provider.trim()
+    payload.model = state.model.trim();
+    payload.provider = state.provider.trim();
   }
 
   if (state.dirtySkills) {
-    payload.disabled_skills = state.skills.filter(s => !s.enabled).map(s => s.name)
+    payload.disabled_skills = state.skills
+      .filter((s) => !s.enabled)
+      .map((s) => s.name);
   }
 
   if (state.dirtyToolsets) {
-    const all = state.toolsets.length
-    const enabled = state.toolsets.filter(t => t.enabled)
+    const all = state.toolsets.length;
+    const enabled = state.toolsets.filter((t) => t.enabled);
     // All enabled (or none) = clear the pin; otherwise pin the checked set.
-    payload.enabled_toolsets = enabled.length === all || enabled.length === 0 ? [] : enabled.map(t => t.name)
+    payload.enabled_toolsets =
+      enabled.length === all || enabled.length === 0
+        ? []
+        : enabled.map((t) => t.name);
   }
 
   if (state.dirtyMcp) {
-    payload.enabled_mcp_servers = (state.mcp || []).filter(m => m.enabled).map(m => m.name)
+    payload.enabled_mcp_servers = (state.mcp || [])
+      .filter((m) => m.enabled)
+      .map((m) => m.name);
   }
 
   if (Object.keys(payload).length === 1) {
-    return { ok: true, applied: {} }
+    return { ok: true, applied: {} };
   }
 
-  return host.request('profiles.configure', payload)
+  return host.request("profiles.configure", payload);
 }
 
 // ── edit profile dialog ──────────────────────────────────────────────────────
 
 function labeled(label, control) {
-  return jsxs('div', {
-    className: 'grid gap-1.5',
+  return jsxs("div", {
+    className: "grid gap-1.5",
     children: [
-      jsx('label', {
-        className: 'text-xs font-medium text-(--ui-text-secondary)',
-        children: label
+      jsx("label", {
+        className: "text-xs font-medium text-(--ui-text-secondary)",
+        children: label,
       }),
-      control
-    ]
-  })
+      control,
+    ],
+  });
 }
 
 function EditProfileDialog({ bot, open, onClose }) {
-  const metaAll = useValue($botMeta)
-  const meta = bot ? metaAll[bot.name] : null
-  const appearance = bot ? botAppearance(bot.name, meta) : { shape: 'circle', color: AVATAR_COLORS[3] }
-  const [shape, setShape] = useState(appearance.shape)
-  const [color, setColor] = useState(appearance.color)
-  const [image, setImage] = useState(appearance.image)
-  const [title, setTitle] = useState(meta?.title || '')
-  const [description, setDescription] = useState(bot?.description || '')
-  const [busy, setBusy] = useState(false)
-  const [advanced, setAdvanced] = useState(false)
-  const [adv, setAdv] = useState(emptyAdvancedState())
+  const metaAll = useValue($botMeta);
+  const meta = bot ? metaAll[bot.name] : null;
+  const appearance = bot
+    ? botAppearance(bot.name, meta)
+    : { shape: "circle", color: AVATAR_COLORS[3] };
+  const [shape, setShape] = useState(appearance.shape);
+  const [color, setColor] = useState(appearance.color);
+  const [image, setImage] = useState(appearance.image);
+  const [title, setTitle] = useState(meta?.title || "");
+  const [description, setDescription] = useState(bot?.description || "");
+  const [busy, setBusy] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const [adv, setAdv] = useState(emptyAdvancedState());
 
   // Re-seed local state each time a different bot opens the dialog.
-  const [seedKey, setSeedKey] = useState(null)
-  const currentKey = bot ? `${bot.name}:${open}` : null
-  if (currentKey !== seedKey) {
-    setSeedKey(currentKey)
+  const currentKey = bot ? `${bot.name}:${open}` : null;
+  useEffect(() => {
     if (bot && open) {
-      setShape(appearance.shape)
-      setColor(appearance.color)
-      setImage(appearance.image)
-      setTitle(meta?.title || '')
-      setDescription(bot.description || '')
-      setBusy(false)
-      setAdvanced(false)
-      setAdv(emptyAdvancedState())
+      setShape(appearance.shape);
+      setColor(appearance.color);
+      setImage(appearance.image);
+      setTitle(meta?.title || "");
+      setDescription(bot.description || "");
+      setBusy(false);
+      setAdvanced(false);
+      setAdv(emptyAdvancedState());
     }
-  }
+  }, [currentKey]);
 
   if (!bot) {
-    return null
+    return null;
   }
 
   const submit = async () => {
     if (busy) {
-      return
+      return;
     }
 
-    setBusy(true)
-    saveBotMeta(bot.name, { shape, color, image, title: title.trim(), custom: true })
+    setBusy(true);
+    saveBotMeta(bot.name, {
+      shape,
+      color,
+      image,
+      title: title.trim(),
+      custom: true,
+    });
 
-    const desc = description.trim()
-    if (desc !== (bot.description || '').trim()) {
+    const desc = description.trim();
+    if (desc !== (bot.description || "").trim()) {
       try {
-        await host.request('cli.exec', {
-          argv: ['profile', 'describe', bot.name, '--text', desc]
-        })
-        queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+        await host.request("cli.exec", {
+          argv: ["profile", "describe", bot.name, "--text", desc],
+        });
+        queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
       } catch (err) {
-        host.notifyError(err, 'Saved look locally; description update failed')
+        host.notifyError(err, "Saved look locally; description update failed");
       }
     }
 
-    if (adv.loaded && (adv.dirtyModel || adv.dirtySoul || adv.dirtySkills || adv.dirtyToolsets || adv.dirtyMcp)) {
+    if (
+      adv.loaded &&
+      (adv.dirtyModel ||
+        adv.dirtySoul ||
+        adv.dirtySkills ||
+        adv.dirtyToolsets ||
+        adv.dirtyMcp)
+    ) {
       try {
-        const res = await applyAdvancedConfig(bot.name, adv)
-        const failed = Object.entries(res?.applied || {}).filter(([, ok]) => !ok)
+        const res = await applyAdvancedConfig(bot.name, adv);
+        const failed = Object.entries(res?.applied || {}).filter(
+          ([, ok]) => !ok,
+        );
 
         if (failed.length) {
-          host.notify({ kind: 'error', message: `Some sections failed: ${failed.map(([k]) => k).join(', ')}` })
+          host.notify({
+            kind: "error",
+            message: `Some sections failed: ${failed.map(([k]) => k).join(", ")}`,
+          });
         }
       } catch (err) {
-        host.notifyError(err, 'Advanced configuration failed')
+        host.notifyError(err, "Advanced configuration failed");
       }
     }
 
-    host.notify({ kind: 'success', message: `${displayName(bot, { title })} updated` })
-    setBusy(false)
-    onClose()
-  }
+    host.notify({
+      kind: "success",
+      message: `${displayName(bot, { title })} updated`,
+    });
+    setBusy(false);
+    onClose();
+  };
 
   return jsx(Dialog, {
     open,
-    onOpenChange: value => !value && !busy && onClose(),
+    onOpenChange: (value) => !value && !busy && onClose(),
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-3xl' : 'max-w-sm',
+      className: advanced ? "max-w-3xl" : "max-w-sm",
       // Same resizable-window treatment as the create dialog.
       style: advanced
-        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        ? {
+            resize: "both",
+            overflow: "auto",
+            minWidth: 420,
+            minHeight: 360,
+            maxWidth: "95vw",
+            maxHeight: "90vh",
+          }
         : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'Edit Profile' }),
-            jsx(DialogDescription, { children: `Appearance and role for ${displayName(bot, null)} (${bot.name}).` })
-          ]
+            jsx(DialogTitle, { children: "Edit Profile" }),
+            jsx(DialogDescription, {
+              children: `Appearance and role for ${displayName(bot, null)} (${bot.name}).`,
+            }),
+          ],
         }),
-        jsxs('div', {
-          className: 'grid gap-4',
+        jsxs("div", {
+          className: "grid gap-4",
           children: [
-            jsx('div', {
-              className: 'flex justify-center py-1',
-              children: jsx(BotFace, { shape, color, image, size: 64, name: bot.name })
+            jsx("div", {
+              className: "flex justify-center py-1",
+              children: jsx(BotFace, {
+                shape,
+                color,
+                image,
+                size: 64,
+                name: bot.name,
+              }),
             }),
             jsx(AvatarPicker, {
               shape,
@@ -2557,127 +3079,150 @@ function EditProfileDialog({ bot, open, onClose }) {
               onShape: setShape,
               onColor: setColor,
               onImage: setImage,
-              generateSeed: { name: bot.name, title, description }
+              generateSeed: { name: bot.name, title, description },
             }),
             labeled(
-              'Title',
+              "Title",
               jsx(Input, {
                 placeholder: displayName(bot, null),
                 value: title,
-                onChange: event => setTitle(event.target.value)
-              })
+                onChange: (event) => setTitle(event.target.value),
+              }),
             ),
             labeled(
-              'Description',
+              "Description",
               jsx(Textarea, {
-                className: 'min-h-16',
-                placeholder: 'What should this agent help with?',
+                className: "min-h-16",
+                placeholder: "What should this agent help with?",
                 value: description,
-                onChange: event => setDescription(event.target.value)
-              })
+                onChange: (event) => setDescription(event.target.value),
+              }),
             ),
-            jsxs('button', {
-              type: 'button',
+            jsxs("button", {
+              type: "button",
               className:
-                'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
-              onClick: () => setAdvanced(v => !v),
+                "flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
+              onClick: () => setAdvanced((v) => !v),
               children: [
-                jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
-                'Advanced — model, skills, toolsets, SOUL.md'
-              ]
+                jsx(Codicon, {
+                  name: advanced ? "chevron-down" : "chevron-right",
+                  className: "text-[0.8rem]",
+                }),
+                "Advanced — model, skills, toolsets, SOUL.md",
+              ],
             }),
             advanced
-              ? jsx('div', {
-                  className: 'rounded-md border border-(--ui-stroke-secondary) p-3',
-                  children: jsx(AdvancedProfileConfig, { bot: bot.name, state: adv, setState: setAdv })
+              ? jsx("div", {
+                  className:
+                    "rounded-md border border-(--ui-stroke-secondary) p-3",
+                  children: jsx(AdvancedProfileConfig, {
+                    bot: bot.name,
+                    state: adv,
+                    setState: setAdv,
+                  }),
                 })
-              : null
-          ]
+              : null,
+          ],
         }),
         jsxs(DialogFooter, {
           children: [
-            jsx(Button, { variant: 'ghost', disabled: busy, onClick: onClose, children: 'Cancel' }),
-            jsx(Button, { disabled: busy, onClick: submit, children: busy ? 'Saving…' : 'Save' })
-          ]
-        })
-      ]
-    })
-  })
+            jsx(Button, {
+              variant: "ghost",
+              disabled: busy,
+              onClick: onClose,
+              children: "Cancel",
+            }),
+            jsx(Button, {
+              disabled: busy,
+              onClick: submit,
+              children: busy ? "Saving…" : "Save",
+            }),
+          ],
+        }),
+      ],
+    }),
+  });
 }
 
 // ── create dialog ────────────────────────────────────────────────────────────
 
 function CreateAgentDialog({ open, onClose, roster }) {
-  const [name, setName] = useState('')
+  const [name, setName] = useState("");
   // Create mode: the profile doesn't exist yet, so per-profile MCP credential
   // setup can't target it — the row shows a "save the agent first" hint and
   // the live setup UI lives in Edit Profile (where bot.name exists).
-  const setupProfile = null
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [shape, setShape] = useState('circle')
-  const [color, setColor] = useState(AVATAR_COLORS[3])
-  const [image, setImage] = useState(null)
-  const [advanced, setAdvanced] = useState(false)
-  const [cloneFrom, setCloneFrom] = useState('__none__')
-  const [model, setModel] = useState('')
-  const [provider, setProvider] = useState('')
-  const [soul, setSoul] = useState('')
-  const [noSkills, setNoSkills] = useState(false)
-  const [shareAuth, setShareAuth] = useState(true)
-  const [advTab, setAdvTab] = useState('general')
-  const [caps, setCaps] = useState(null)
-  const [capsFailed, setCapsFailed] = useState(false)
-  const [dirtyCaps, setDirtyCaps] = useState({ skills: false, toolsets: false, mcp: false })
-  const [capFilter, setCapFilter] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
+  const setupProfile = null;
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [shape, setShape] = useState("circle");
+  const [color, setColor] = useState(AVATAR_COLORS[3]);
+  const [image, setImage] = useState(null);
+  const [advanced, setAdvanced] = useState(false);
+  const [cloneFrom, setCloneFrom] = useState("__none__");
+  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("");
+  const [soul, setSoul] = useState("");
+  const [noSkills, setNoSkills] = useState(false);
+  const [shareAuth, setShareAuth] = useState(true);
+  const [advTab, setAdvTab] = useState("general");
+  const [caps, setCaps] = useState(null);
+  const [capsFailed, setCapsFailed] = useState(false);
+  const [dirtyCaps, setDirtyCaps] = useState({
+    skills: false,
+    toolsets: false,
+    mcp: false,
+  });
+  const [capFilter, setCapFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
 
-  const slug = slugify(name)
-  const valid = slug.length > 0 && NAME_RE.test(slug)
-  const taken = roster.some(b => b.name === slug)
+  const slug = slugify(name);
+  const valid = slug.length > 0 && NAME_RE.test(slug);
+  const taken = roster.some((b) => b.name === slug);
 
   const reset = () => {
-    setName('')
-    setTitle('')
-    setDescription('')
-    setShape('circle')
-    setColor(AVATAR_COLORS[3])
-    setImage(null)
-    setAdvanced(false)
-    setCloneFrom('__none__')
-    setModel('')
-    setProvider('')
-    setSoul('')
-    setNoSkills(false)
-    setShareAuth(true)
-    setAdvTab('general')
-    setCaps(null)
-    setCapsFailed(false)
-    setDirtyCaps({ skills: false, toolsets: false, mcp: false })
-    setCapFilter('')
-    setBusy(false)
-    setError(null)
-  }
+    setName("");
+    setTitle("");
+    setDescription("");
+    setShape("circle");
+    setColor(AVATAR_COLORS[3]);
+    setImage(null);
+    setAdvanced(false);
+    setCloneFrom("__none__");
+    setModel("");
+    setProvider("");
+    setSoul("");
+    setNoSkills(false);
+    setShareAuth(true);
+    setAdvTab("general");
+    setCaps(null);
+    setCapsFailed(false);
+    setDirtyCaps({ skills: false, toolsets: false, mcp: false });
+    setCapFilter("");
+    setBusy(false);
+    setError(null);
+  };
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
   // what it WILL have — the clone source's catalog, else the main profile's.
-  const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
+  const capSource = cloneFrom === "__none__" ? "default" : cloneFrom;
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
-      return
+      return;
     }
 
     Promise.all([
-      host.request('profiles.describe', { name: capSource }),
-      host.request('mcp.catalog', {}).catch(() => null)
+      host.request("profiles.describe", { name: capSource }),
+      host.request("mcp.catalog", {}).catch(() => null),
     ])
       .then(([res, cat]) => {
         // Full MCP menu = the profile's configured servers + the bundled
         // catalog (installable). Configured entries win on name clash.
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+        const configured = res.mcp_servers || [];
+        const have = new Set(configured.map((m) => m.name));
+        const catalog = ((cat && cat.servers) || []).filter(
+          (s) => !have.has(s.name),
+        );
 
         setCaps({
           source: capSource,
@@ -2685,134 +3230,182 @@ function CreateAgentDialog({ open, onClose, roster }) {
           toolsets: res.toolsets || [],
           mcp: [
             ...configured,
-            ...catalog.map(s => ({
+            ...catalog.map((s) => ({
               name: s.name,
               enabled: false,
               fromCatalog: true,
               installed: s.installed,
               requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ]
-        })
+              description: s.description || "",
+            })),
+          ],
+        });
       })
-      .catch(() => setCapsFailed(true))
-  }
+      .catch(() => setCapsFailed(true));
+  };
 
   const toggleCap = (kind, name, enabled) => {
-    setDirtyCaps(prev => ({ ...prev, [kind === 'mcp' ? 'mcp' : kind]: true }))
-    setCaps(prev =>
+    setDirtyCaps((prev) => ({
+      ...prev,
+      [kind === "mcp" ? "mcp" : kind]: true,
+    }));
+    setCaps((prev) =>
       prev
-        ? { ...prev, [kind]: prev[kind].map(x => (x.name === name ? { ...x, enabled } : x)) }
-        : prev
-    )
-  }
+        ? {
+            ...prev,
+            [kind]: prev[kind].map((x) =>
+              x.name === name ? { ...x, enabled } : x,
+            ),
+          }
+        : prev,
+    );
+  };
 
   const submit = async () => {
     if (!valid || taken || busy) {
-      return
+      return;
     }
 
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
 
     try {
-      const descriptionText = [title, description].filter(Boolean).join(' — ')
+      const descriptionText = [title, description].filter(Boolean).join(" — ");
 
-      await host.request('profiles.create', {
+      await host.request("profiles.create", {
         name: slug,
         description: descriptionText,
-        clone_from: cloneFrom === '__none__' ? null : cloneFrom,
+        clone_from: cloneFrom === "__none__" ? null : cloneFrom,
         no_skills: noSkills,
         // Shared (not copied) auth keeps ONE OAuth/token pool with the main
         // profile, so refreshes can't invalidate each other. Older gateways
         // ignore the param and copy — still functional, just forked.
         share_auth: shareAuth,
-        soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
-        ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
-      })
+        soul: composeSoul({
+          name: slug,
+          title,
+          description,
+          roster,
+          customSoul: soul,
+        }),
+        ...(model.trim() && provider.trim()
+          ? { model: model.trim(), provider: provider.trim() }
+          : {}),
+      });
 
       // Apply capability picks from the Advanced tabs (best-effort; the
       // profile exists either way and Edit Profile can finish the job).
       try {
-        const capPayload = {}
+        const capPayload = {};
 
         if (dirtyCaps.skills && caps) {
-          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
+          capPayload.disabled_skills = caps.skills
+            .filter((s) => !s.enabled)
+            .map((s) => s.name);
         }
         if (dirtyCaps.toolsets && caps) {
-          const en = caps.toolsets.filter(t => t.enabled)
+          const en = caps.toolsets.filter((t) => t.enabled);
           capPayload.enabled_toolsets =
-            en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
+            en.length === caps.toolsets.length || en.length === 0
+              ? []
+              : en.map((t) => t.name);
         }
         if (dirtyCaps.mcp && caps) {
-          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+          capPayload.enabled_mcp_servers = caps.mcp
+            .filter((m) => m.enabled)
+            .map((m) => m.name);
         }
         if (Object.keys(capPayload).length) {
-          await host.request('profiles.configure', { name: slug, ...capPayload })
+          await host.request("profiles.configure", {
+            name: slug,
+            ...capPayload,
+          });
         }
       } catch {
         /* capability application is best-effort */
       }
 
-      saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
-      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
-      host.notify({ kind: 'success', message: `Agent "${displayName({ name: slug, title })}" created` })
-      reset()
-      onClose()
-      $selectedBot.set(slug)
+      saveBotMeta(slug, {
+        shape,
+        color,
+        image,
+        title: title.trim(),
+        created: Date.now(),
+      });
+      queryClient.invalidateQueries({ queryKey: ROSTER_KEY });
+      host.notify({
+        kind: "success",
+        message: `Agent "${displayName({ name: slug, title })}" created`,
+      });
+      reset();
+      onClose();
+      $selectedBot.set(slug);
 
       // Birth the bot's forever chat right away: it introduces itself as
       // the first thing the user sees, and the pin exists from minute one.
       try {
         // Creates, pins, opens, and kicks off the intro in one flow.
-        const sid = await createCanonicalChat(slug)
+        const sid = await createCanonicalChat(slug);
 
-        if (!sid && typeof host.newChat === 'function') {
-          host.newChat(slug)
+        if (!sid && typeof host.newChat === "function") {
+          host.newChat(slug);
         }
       } catch {
-        if (typeof host.newChat === 'function') {
-          host.newChat(slug)
+        if (typeof host.newChat === "function") {
+          host.newChat(slug);
         }
       }
     } catch (err) {
-      setBusy(false)
-      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
     }
-  }
+  };
 
   return jsx(Dialog, {
     open,
-    onOpenChange: value => {
+    onOpenChange: (value) => {
       if (!value && !busy) {
-        reset()
-        onClose()
+        reset();
+        onClose();
       }
     },
     children: jsxs(DialogContent, {
-      className: advanced ? 'max-w-3xl' : 'max-w-md',
+      className: advanced ? "max-w-3xl" : "max-w-md",
       // Native resize handle (bottom-right corner): the dialog becomes a
       // window the user can grow/shrink. overflow:auto is required for CSS
       // resize to engage; caps keep it on screen.
       style: advanced
-        ? { resize: 'both', overflow: 'auto', minWidth: 420, minHeight: 360, maxWidth: '95vw', maxHeight: '90vh' }
+        ? {
+            resize: "both",
+            overflow: "auto",
+            minWidth: 420,
+            minHeight: 360,
+            maxWidth: "95vw",
+            maxHeight: "90vh",
+          }
         : undefined,
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'New Agent' }),
+            jsx(DialogTitle, { children: "New Agent" }),
             jsx(DialogDescription, {
-              children: 'A named teammate with its own memory, skills, and chat. It can message your other agents.'
-            })
-          ]
+              children:
+                "A named teammate with its own memory, skills, and chat. It can message your other agents.",
+            }),
+          ],
         }),
-        jsxs('div', {
-          className: 'grid gap-3.5',
+        jsxs("div", {
+          className: "grid gap-3.5",
           children: [
-            jsx('div', {
-              className: 'flex justify-center py-1',
-              children: jsx(BotFace, { shape, color, image, size: 56, name: slug || 'agent' })
+            jsx("div", {
+              className: "flex justify-center py-1",
+              children: jsx(BotFace, {
+                shape,
+                color,
+                image,
+                size: 56,
+                name: slug || "agent",
+              }),
             }),
             jsx(AvatarPicker, {
               shape,
@@ -2821,349 +3414,418 @@ function CreateAgentDialog({ open, onClose, roster }) {
               onShape: setShape,
               onColor: setColor,
               onImage: setImage,
-              generateSeed: { name: slug || 'agent', title, description }
+              generateSeed: { name: slug || "agent", title, description },
             }),
             labeled(
-              'Name',
+              "Name",
               jsx(Input, {
                 autoFocus: true,
-                placeholder: 'inbox-triage',
+                placeholder: "inbox-triage",
                 value: name,
-                onChange: event => setName(event.target.value)
-              })
+                onChange: (event) => setName(event.target.value),
+              }),
             ),
             taken
-              ? jsx('div', {
-                  className: 'text-xs text-(--ui-accent)',
-                  children: `An agent named "${slug}" already exists.`
+              ? jsx("div", {
+                  className: "text-xs text-(--ui-accent)",
+                  children: `An agent named "${slug}" already exists.`,
                 })
               : null,
             labeled(
-              'Title',
+              "Title",
               jsx(Input, {
-                placeholder: 'Inbox Triage',
+                placeholder: "Inbox Triage",
                 value: title,
-                onChange: event => setTitle(event.target.value)
-              })
+                onChange: (event) => setTitle(event.target.value),
+              }),
             ),
             labeled(
-              'Description',
+              "Description",
               jsx(Textarea, {
-                className: 'min-h-16',
-                placeholder: 'What should this Bot help with?',
+                className: "min-h-16",
+                placeholder: "What should this Bot help with?",
                 value: description,
-                onChange: event => setDescription(event.target.value)
-              })
+                onChange: (event) => setDescription(event.target.value),
+              }),
             ),
-            jsxs('button', {
-              type: 'button',
+            jsxs("button", {
+              type: "button",
               className:
-                'flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
+                "flex items-center gap-1 text-xs font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
               onClick: () => {
-                setAdvanced(v => {
+                setAdvanced((v) => {
                   if (!v) {
-                    ensureCaps()
+                    ensureCaps();
                   }
-                  return !v
-                })
+                  return !v;
+                });
               },
               children: [
-                jsx(Codicon, { name: advanced ? 'chevron-down' : 'chevron-right', className: 'text-[0.8rem]' }),
-                'Advanced'
-              ]
+                jsx(Codicon, {
+                  name: advanced ? "chevron-down" : "chevron-right",
+                  className: "text-[0.8rem]",
+                }),
+                "Advanced",
+              ],
             }),
             advanced
-              ? jsxs('div', {
-                  className: 'grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3',
+              ? jsxs("div", {
+                  className:
+                    "grid gap-3 rounded-md border border-(--ui-stroke-secondary) p-3",
                   children: [
-                    jsx('div', {
-                      className: 'flex gap-1',
+                    jsx("div", {
+                      className: "flex gap-1",
                       children: [
-                        ['general', 'General'],
-                        ['skills', 'Skills'],
-                        ['toolsets', 'Tools'],
-                        ['mcp', 'MCP']
+                        ["general", "General"],
+                        ["skills", "Skills"],
+                        ["toolsets", "Tools"],
+                        ["mcp", "MCP"],
                       ].map(([id, label]) =>
                         jsx(
-                          'button',
+                          "button",
                           {
-                            type: 'button',
+                            type: "button",
                             className: cn(
-                              'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
                               advTab === id
-                                ? 'bg-(--chrome-action-hover) text-(--ui-text-primary)'
-                                : 'text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)'
+                                ? "bg-(--chrome-action-hover) text-(--ui-text-primary)"
+                                : "text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)",
                             ),
                             onClick: () => {
-                              setAdvTab(id)
-                              setCapFilter('')
-                              if (id !== 'general') {
-                                ensureCaps()
+                              setAdvTab(id);
+                              setCapFilter("");
+                              if (id !== "general") {
+                                ensureCaps();
                               }
                             },
-                            children: label
+                            children: label,
                           },
-                          id
-                        )
-                      )
+                          id,
+                        ),
+                      ),
                     }),
-                    advTab === 'general'
-                      ? jsxs('div', {
-                          className: 'grid gap-3.5',
+                    advTab === "general"
+                      ? jsxs("div", {
+                          className: "grid gap-3.5",
                           children: [
                             labeled(
-                              'Clone from profile',
+                              "Clone from profile",
                               jsxs(Select, {
                                 value: cloneFrom,
-                                onValueChange: value => {
-                                  setCloneFrom(value)
-                                  setCaps(null)
-                                  setCapsFailed(false)
+                                onValueChange: (value) => {
+                                  setCloneFrom(value);
+                                  setCaps(null);
+                                  setCapsFailed(false);
                                 },
                                 children: [
                                   jsx(SelectTrigger, {
-                                    className: 'h-8 rounded-md',
-                                    children: jsx(SelectValue, {})
+                                    className: "h-8 rounded-md",
+                                    children: jsx(SelectValue, {}),
                                   }),
                                   jsxs(SelectContent, {
                                     children: [
                                       jsx(SelectItem, {
-                                        value: '__none__',
-                                        children: 'Fresh profile (bundled skills)'
+                                        value: "__none__",
+                                        children:
+                                          "Fresh profile (bundled skills)",
                                       }),
-                                      ...roster.map(b => jsx(SelectItem, { value: b.name, children: b.name }, b.name))
-                                    ]
-                                  })
-                                ]
-                              })
+                                      ...roster.map((b) =>
+                                        jsx(
+                                          SelectItem,
+                                          { value: b.name, children: b.name },
+                                          b.name,
+                                        ),
+                                      ),
+                                    ],
+                                  }),
+                                ],
+                              }),
                             ),
                             jsx(ModelPicker, {
                               value: { provider, model },
-                              onChange: patch => {
-                                if ('provider' in patch) {
-                                  setProvider(patch.provider)
+                              onChange: (patch) => {
+                                if ("provider" in patch) {
+                                  setProvider(patch.provider);
                                 }
-                                if ('model' in patch) {
-                                  setModel(patch.model)
+                                if ("model" in patch) {
+                                  setModel(patch.model);
                                 }
                               },
-                              placeholderModel: 'inherited from launch profile'
+                              placeholderModel: "inherited from launch profile",
                             }),
                             labeled(
-                              'SOUL.md (optional — replaces the generated persona)',
+                              "SOUL.md (optional — replaces the generated persona)",
                               jsx(Textarea, {
-                                className: 'min-h-24 font-mono text-xs leading-5',
+                                className:
+                                  "min-h-24 font-mono text-xs leading-5",
                                 placeholder:
-                                  'Leave blank to auto-generate from name/title/description + agent-messaging roster.',
+                                  "Leave blank to auto-generate from name/title/description + agent-messaging roster.",
                                 value: soul,
-                                onChange: event => setSoul(event.target.value)
-                              })
+                                onChange: (event) =>
+                                  setSoul(event.target.value),
+                              }),
                             ),
-                            jsxs('label', {
-                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
+                            jsxs("label", {
+                              className:
+                                "flex items-center gap-2 text-xs text-(--ui-text-secondary)",
                               children: [
                                 jsx(Checkbox, {
                                   checked: shareAuth,
-                                  onCheckedChange: value => setShareAuth(Boolean(value))
+                                  onCheckedChange: (value) =>
+                                    setShareAuth(Boolean(value)),
                                 }),
-                                'Share keys & accounts with the main profile'
-                              ]
+                                "Share keys & accounts with the main profile",
+                              ],
                             }),
-                            jsx('div', {
-                              className: 'pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)',
+                            jsx("div", {
+                              className:
+                                "pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)",
                               children:
-                                'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.'
+                                "Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.",
                             }),
-                            jsxs('label', {
-                              className: 'flex items-center gap-2 text-xs text-(--ui-text-secondary)',
+                            jsxs("label", {
+                              className:
+                                "flex items-center gap-2 text-xs text-(--ui-text-secondary)",
                               children: [
                                 jsx(Checkbox, {
                                   checked: noSkills,
-                                  onCheckedChange: value => setNoSkills(Boolean(value))
+                                  onCheckedChange: (value) =>
+                                    setNoSkills(Boolean(value)),
                                 }),
-                                'Create empty (skip bundled skills)'
-                              ]
-                            })
-                          ]
+                                "Create empty (skip bundled skills)",
+                              ],
+                            }),
+                          ],
                         })
                       : capsFailed
-                        ? jsx('div', {
-                            className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
+                        ? jsx("div", {
+                            className:
+                              "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
                             children:
-                              'Capability catalog needs a newer gateway (restart it after updating Hermes).'
+                              "Capability catalog needs a newer gateway (restart it after updating Hermes).",
                           })
-                        : !caps
-                          ? jsx('div', {
-                              className: 'flex justify-center py-4',
-                              children: jsx(GlyphSpinner, {
-                                spinner: 'breathe',
-                                className: 'text-(--ui-text-tertiary)'
-                              })
-                            })
-                          : advTab === 'skills'
+                        : caps
+                          ? advTab === "skills"
                             ? noSkills
-                              ? jsx('div', {
-                                  className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                                  children: '“Create empty” is checked — no bundled skills will be installed.'
+                              ? jsx("div", {
+                                  className:
+                                    "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
+                                  children:
+                                    "“Create empty” is checked — no bundled skills will be installed.",
                                 })
-                              : jsxs('div', {
-                                  className: 'grid gap-1.5',
+                              : jsxs("div", {
+                                  className: "grid gap-1.5",
                                   children: [
                                     jsx(Input, {
-                                      className: 'h-7 text-xs',
-                                      placeholder: 'Filter skills…',
+                                      className: "h-7 text-xs",
+                                      placeholder: "Filter skills…",
                                       value: capFilter,
-                                      onChange: event => setCapFilter(event.target.value)
+                                      onChange: (event) =>
+                                        setCapFilter(event.target.value),
                                     }),
                                     jsx(ScrollArea, {
                                       style: { maxHeight: 200 },
                                       children: jsx(CheckList, {
                                         items: capFilter.trim()
-                                          ? caps.skills.filter(s =>
-                                              s.name.toLowerCase().includes(capFilter.trim().toLowerCase())
+                                          ? caps.skills.filter((s) =>
+                                              s.name
+                                                .toLowerCase()
+                                                .includes(
+                                                  capFilter
+                                                    .trim()
+                                                    .toLowerCase(),
+                                                ),
                                             )
                                           : caps.skills,
-                                        onToggle: (name, enabled) => toggleCap('skills', name, enabled),
-                                        columns: 2
-                                      })
+                                        onToggle: (name, enabled) =>
+                                          toggleCap("skills", name, enabled),
+                                        columns: 2,
+                                      }),
                                     }),
-                                    jsx('div', {
-                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                      children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`
+                                    jsx("div", {
+                                      className:
+                                        "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
+                                      children: `Catalog from ${caps.source} — unchecked skills are disabled after creation.`,
                                     }),
                                     jsx(HubSkillsSection, {
                                       forProfile: null,
-                                      onInstalled: name =>
-                                        setCaps(prev =>
-                                          !prev || prev.skills.some(s => s.name === name)
+                                      onInstalled: (name) =>
+                                        setCaps((prev) =>
+                                          !prev ||
+                                          prev.skills.some(
+                                            (s) => s.name === name,
+                                          )
                                             ? prev
-                                            : { ...prev, skills: [...prev.skills, { name, enabled: true }] }
-                                        )
-                                    })
-                                  ]
+                                            : {
+                                                ...prev,
+                                                skills: [
+                                                  ...prev.skills,
+                                                  { name, enabled: true },
+                                                ],
+                                              },
+                                        ),
+                                    }),
+                                  ],
                                 })
-                            : advTab === 'toolsets'
-                              ? jsxs('div', {
-                                  className: 'grid gap-1.5',
+                            : advTab === "toolsets"
+                              ? jsxs("div", {
+                                  className: "grid gap-1.5",
                                   children: [
                                     jsx(ScrollArea, {
                                       style: { maxHeight: 200 },
                                       children: jsx(CheckList, {
                                         items: caps.toolsets,
-                                        onToggle: (name, enabled) => toggleCap('toolsets', name, enabled),
-                                        columns: 2
-                                      })
+                                        onToggle: (name, enabled) =>
+                                          toggleCap("toolsets", name, enabled),
+                                        columns: 2,
+                                      }),
                                     }),
-                                    jsx('div', {
-                                      className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                      children: 'Leaving all (or none) checked keeps the default toolset behavior.'
-                                    })
-                                  ]
+                                    jsx("div", {
+                                      className:
+                                        "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
+                                      children:
+                                        "Leaving all (or none) checked keeps the default toolset behavior.",
+                                    }),
+                                  ],
                                 })
                               : caps.mcp.length === 0
-                                ? jsx('div', {
-                                    className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
-                                    children: 'No MCP servers configured or in the catalog.'
+                                ? jsx("div", {
+                                    className:
+                                      "px-2 py-3 text-center text-xs text-(--ui-text-tertiary)",
+                                    children:
+                                      "No MCP servers configured or in the catalog.",
                                   })
-                                : jsxs('div', {
-                                    className: 'grid gap-1.5',
+                                : jsxs("div", {
+                                    className: "grid gap-1.5",
                                     children: [
                                       jsx(ScrollArea, {
                                         style: { maxHeight: 200 },
-                                        children: jsx('div', {
-                                          className: 'grid gap-1',
-                                          children: caps.mcp.map(m => {
+                                        children: jsx("div", {
+                                          className: "grid gap-1",
+                                          children: caps.mcp.map((m) => {
                                             const needsSetup =
-                                              m.fromCatalog && !m.installed && (m.requires || []).length > 0
+                                              m.fromCatalog &&
+                                              !m.installed &&
+                                              (m.requires || []).length > 0;
 
                                             return jsxs(
-                                              'label',
+                                              "label",
                                               {
-                                                className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
+                                                className:
+                                                  "flex items-start gap-2 text-xs text-(--ui-text-secondary)",
                                                 children: [
                                                   jsx(Checkbox, {
                                                     checked: !!m.enabled,
                                                     disabled: needsSetup,
-                                                    onCheckedChange: value => toggleCap('mcp', m.name, Boolean(value))
+                                                    onCheckedChange: (value) =>
+                                                      toggleCap(
+                                                        "mcp",
+                                                        m.name,
+                                                        Boolean(value),
+                                                      ),
                                                   }),
-                                                  jsxs('span', {
-                                                    className: 'min-w-0',
+                                                  jsxs("span", {
+                                                    className: "min-w-0",
                                                     children: [
-                                                      jsx('span', { children: m.name }),
+                                                      jsx("span", {
+                                                        children: m.name,
+                                                      }),
                                                       m.fromCatalog
-                                                        ? jsx('span', {
-                                                            className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+                                                        ? jsx("span", {
+                                                            className:
+                                                              "ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)",
                                                             children: needsSetup
-                                                              ? (setupProfile
-                                                                  ? null
-                                                                  : 'needs setup (' + (m.requires || []).join(', ') + ') — save the agent first, then set up here')
+                                                              ? setupProfile
+                                                                ? null
+                                                                : "needs setup (" +
+                                                                  (
+                                                                    m.requires ||
+                                                                    []
+                                                                  ).join(", ") +
+                                                                  ") — save the agent first, then set up here"
                                                               : m.installed
-                                                                ? 'catalog · installed'
-                                                                : 'catalog'
+                                                                ? "catalog · installed"
+                                                                : "catalog",
                                                           })
                                                         : null,
                                                       needsSetup && setupProfile
                                                         ? jsx(McpSetupButton, {
-                                                            profile: setupProfile,
+                                                            profile:
+                                                              setupProfile,
                                                             entry: m,
-                                                            onDone: () => toggleCap('mcp', m.name, true)
+                                                            onDone: () =>
+                                                              toggleCap(
+                                                                "mcp",
+                                                                m.name,
+                                                                true,
+                                                              ),
                                                           })
                                                         : null,
                                                       m.description
-                                                        ? jsx('div', {
+                                                        ? jsx("div", {
                                                             className:
-                                                              'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                                            children: m.description
+                                                              "truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
+                                                            children:
+                                                              m.description,
                                                           })
-                                                        : null
-                                                    ]
-                                                  })
-                                                ]
+                                                        : null,
+                                                    ],
+                                                  }),
+                                                ],
                                               },
-                                              m.name
-                                            )
-                                          })
-                                        })
+                                              m.name,
+                                            );
+                                          }),
+                                        }),
                                       }),
-                                      jsx('div', {
-                                        className: 'text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                      jsx("div", {
+                                        className:
+                                          "text-[0.65rem] leading-4 text-(--ui-text-quaternary)",
                                         children:
-                                          'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).'
-                                      })
-                                    ]
+                                          "Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).",
+                                      }),
+                                    ],
                                   })
-                  ]
+                          : jsx("div", {
+                              className: "flex justify-center py-4",
+                              children: jsx(GlyphSpinner, {
+                                spinner: "breathe",
+                                className: "text-(--ui-text-tertiary)",
+                              }),
+                            }),
+                  ],
                 })
               : null,
             error
-              ? jsx('div', {
-                  className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)',
-                  children: error
+              ? jsx("div", {
+                  className:
+                    "rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)",
+                  children: error,
                 })
-              : null
-          ]
+              : null,
+          ],
         }),
         jsxs(DialogFooter, {
           children: [
             jsx(Button, {
-              variant: 'ghost',
+              variant: "ghost",
               disabled: busy,
               onClick: () => {
-                reset()
-                onClose()
+                reset();
+                onClose();
               },
-              children: 'Cancel'
+              children: "Cancel",
             }),
             jsx(Button, {
               disabled: busy || !valid || taken,
               onClick: submit,
-              children: busy ? 'Creating…' : 'Create Agent'
-            })
-          ]
-        })
-      ]
-    })
-  })
+              children: busy ? "Creating…" : "Create Agent",
+            }),
+          ],
+        }),
+      ],
+    }),
+  });
 }
 
 // ── routines (cron) ──────────────────────────────────────────────────────────
@@ -3172,254 +3834,290 @@ function CreateAgentDialog({ open, onClose, roster }) {
 // bot profile uses the plain instruction; a different profile keeps the
 // hermes -p <bot> chat delegation wrapper so the run reaches that bot's
 // history. The tile follows the bot you're chatting with (gateway profile).
-const BOT_TAG_RE = /^\[bot:([a-z0-9][a-z0-9_-]*)\]\s*/i
+const BOT_TAG_RE = /^\[bot:([a-z0-9][a-z0-9_-]*)\]\s*/i;
 
 function routineBot(job) {
-  const match = BOT_TAG_RE.exec(job?.name || '')
-  return match ? match[1].toLowerCase() : null
+  const match = BOT_TAG_RE.exec(job?.name || "");
+  return match ? match[1].toLowerCase() : null;
 }
 
 function routineTitle(job) {
-  return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled cronjob'
+  return (job?.name || "").replace(BOT_TAG_RE, "") || "Untitled cronjob";
 }
 
 function useRoutines() {
   return useQuery({
     queryKey: ROUTINES_KEY,
-    queryFn: () => host.request('cron.manage', { action: 'list', include_disabled: true }),
+    queryFn: () =>
+      host.request("cron.manage", { action: "list", include_disabled: true }),
     refetchInterval: 20000,
-    staleTime: 8000
-  })
+    staleTime: 8000,
+  });
 }
 
 function normalizedProfileName(profile) {
-  return typeof profile === 'string' ? profile.trim().toLowerCase() : ''
+  return typeof profile === "string" ? profile.trim().toLowerCase() : "";
 }
 
 function routinePrompt(bot, title, instruction, activeProfile) {
-  if (normalizedProfileName(bot) && normalizedProfileName(bot) === normalizedProfileName(activeProfile)) {
-    return instruction
+  if (
+    normalizedProfileName(bot) &&
+    normalizedProfileName(bot) === normalizedProfileName(activeProfile)
+  ) {
+    return instruction;
   }
 
+  // bot is validated at creation (NAME_RE), but guard anyway; title may contain quotes/newlines.
+  const safeBot = NAME_RE.test(bot) ? bot : "default";
+  const safeTitle = String(title || "").slice(0, 80);
   return (
-    `You are running the scheduled routine "${title}" for agent '${bot}'. ` +
+    `You are running the scheduled routine ${JSON.stringify(safeTitle)} for agent '${safeBot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
-    `hermes -p ${bot} chat -c "Routine: ${title}" -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `hermes -p ${safeBot} chat -c ${JSON.stringify(`Routine: ${safeTitle}`)} -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
     `If the command fails, report the error instead.`
-  )
+  );
 }
 function scheduleLabel(schedule) {
-  const once = /^once in (.+)$/.exec(schedule || '')
+  const once = /^once in (.+)$/.exec(schedule || "");
 
   if (once) {
-    return `Once (${once[1]})`
+    return `Once (${once[1]})`;
   }
 
-  const bare = /^(\d+)([mhd])$/.exec(schedule || '')
+  const bare = /^(\d+)([mhd])$/.exec(schedule || "");
 
   if (bare) {
-    return `Once (${bare[1]}${bare[2]})`
+    return `Once (${bare[1]}${bare[2]})`;
   }
 
-  const match = /^every (\d+)m$/.exec(schedule || '')
+  const match = /^every (\d+)m$/.exec(schedule || "");
 
   if (match) {
-    const minutes = Number(match[1])
+    const minutes = Number(match[1]);
 
     if (minutes % 1440 === 0) {
-      const d = minutes / 1440
-      return d === 1 ? 'Daily' : `Every ${d} days`
+      const d = minutes / 1440;
+      return d === 1 ? "Daily" : `Every ${d} days`;
     }
 
     if (minutes % 60 === 0) {
-      const h = minutes / 60
-      return h === 1 ? 'Hourly' : `Every ${h}h`
+      const h = minutes / 60;
+      return h === 1 ? "Hourly" : `Every ${h}h`;
     }
 
-    return `Every ${minutes}m`
+    return `Every ${minutes}m`;
   }
 
-  return schedule || ''
+  return schedule || "";
 }
 
 function RoutineRow({ job, onChanged }) {
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState(false);
   // Optimistic overlay: null = trust server state. Set immediately on
   // toggle so the switch responds even before the refetch lands.
-  const [pendingActive, setPendingActive] = useState(null)
-  const serverActive = job.enabled !== false && job.state !== 'paused'
-  const active = pendingActive === null ? serverActive : pendingActive
+  const [pendingActive, setPendingActive] = useState(null);
+  const serverActive = job.enabled !== false && job.state !== "paused";
+  const active = pendingActive === null ? serverActive : pendingActive;
 
   if (pendingActive !== null && pendingActive === serverActive) {
-    setPendingActive(null) // server caught up
+    setPendingActive(null); // server caught up
   }
 
-  const act = async action => {
+  const act = async (action) => {
     if (busy) {
-      return
+      return;
     }
 
-    setBusy(true)
+    setBusy(true);
 
-    if (action === 'pause' || action === 'resume') {
-      setPendingActive(action === 'resume')
+    if (action === "pause" || action === "resume") {
+      setPendingActive(action === "resume");
     }
 
     try {
-      await host.request('cron.manage', { action, name: job.job_id })
-      onChanged()
+      await host.request("cron.manage", { action, name: job.job_id });
+      onChanged();
     } catch (err) {
-      setPendingActive(null)
-      host.notifyError(err, 'Cronjob update failed')
+      setPendingActive(null);
+      host.notifyError(err, "Cronjob update failed");
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
-  return jsxs('div', {
+  return jsxs("div", {
     className: cn(
-      'group grid gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5 transition-colors',
-      'hover:border-(--ui-stroke-primary, var(--ui-stroke-secondary))'
+      "group grid gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5 transition-colors",
+      "hover:border-(--ui-stroke-primary, var(--ui-stroke-secondary))",
     ),
     children: [
-      jsxs('div', {
-        className: 'flex items-center gap-2',
+      jsxs("div", {
+        className: "flex items-center gap-2",
         children: [
-          jsx('span', {
-            'aria-hidden': true,
-            className: cn('size-1.5 shrink-0 rounded-full', active ? 'bg-emerald-500' : 'bg-(--ui-text-quaternary)')
+          jsx("span", {
+            "aria-hidden": true,
+            className: cn(
+              "size-1.5 shrink-0 rounded-full",
+              active ? "bg-emerald-500" : "bg-(--ui-text-quaternary)",
+            ),
           }),
-          jsx('span', {
-            className: cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)'),
-            children: routineTitle(job)
+          jsx("span", {
+            className: cn(
+              "min-w-0 flex-1 truncate text-xs font-medium",
+              !active && "text-(--ui-text-tertiary)",
+            ),
+            children: routineTitle(job),
           }),
           jsx(Switch, {
             checked: active,
             disabled: busy,
-            onCheckedChange: value => act(value ? 'resume' : 'pause')
+            onCheckedChange: (value) => act(value ? "resume" : "pause"),
           }),
           jsx(Tip, {
-            label: 'Delete cronjob',
-            children: jsx('button', {
-              type: 'button',
+            label: "Delete cronjob",
+            children: jsx("button", {
+              type: "button",
               disabled: busy,
               className:
-                'flex size-5 items-center justify-center rounded text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--chrome-action-hover) hover:text-foreground',
-              onClick: () => act('remove'),
-              children: jsx(Codicon, { name: 'trash', className: 'text-[0.75rem]' })
-            })
-          })
-        ]
-      }),
-      jsxs('div', {
-        className: 'flex items-center justify-between gap-2 pl-3.5',
-        children: [
-          jsxs('span', {
-            className:
-              'inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)',
-            children: [jsx(Codicon, { name: 'calendar', className: 'text-[0.7rem]' }), scheduleLabel(job.schedule)]
+                "flex size-5 items-center justify-center rounded text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--chrome-action-hover) hover:text-foreground",
+              onClick: () => act("remove"),
+              children: jsx(Codicon, {
+                name: "trash",
+                className: "text-[0.75rem]",
+              }),
+            }),
           }),
-          jsx('span', {
-            className: 'truncate text-[0.65rem] text-(--ui-text-quaternary)',
-            children: active && job.next_run_at ? `next ${relativeTime(new Date(job.next_run_at).getTime())}` : 'paused'
-          })
-        ]
-      })
-    ]
-  })
+        ],
+      }),
+      jsxs("div", {
+        className: "flex items-center justify-between gap-2 pl-3.5",
+        children: [
+          jsxs("span", {
+            className:
+              "inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)",
+            children: [
+              jsx(Codicon, { name: "calendar", className: "text-[0.7rem]" }),
+              scheduleLabel(job.schedule),
+            ],
+          }),
+          jsx("span", {
+            className: "truncate text-[0.65rem] text-(--ui-text-quaternary)",
+            children:
+              active && job.next_run_at
+                ? `next ${relativeTime(new Date(job.next_run_at).getTime())}`
+                : "paused",
+          }),
+        ],
+      }),
+    ],
+  });
 }
 
 // Structured schedule picker: frequency first, then only the detail that
 // frequency needs (time of day, weekday, day of month, interval). Emits a
 // Hermes-native schedule string; Advanced exposes it raw.
 const FREQUENCIES = [
-  { id: 'once', label: 'Once, in\u2026' },
-  { id: 'hourly', label: 'Every hour' },
-  { id: 'daily', label: 'Every day' },
-  { id: 'weekdays', label: 'Weekdays' },
-  { id: 'weekly', label: 'Every week' },
-  { id: 'monthly', label: 'Every month' },
-  { id: 'interval', label: 'Interval' },
-  { id: 'advanced', label: 'Advanced\u2026' }
-]
+  { id: "once", label: "Once, in\u2026" },
+  { id: "hourly", label: "Every hour" },
+  { id: "daily", label: "Every day" },
+  { id: "weekdays", label: "Weekdays" },
+  { id: "weekly", label: "Every week" },
+  { id: "monthly", label: "Every month" },
+  { id: "interval", label: "Interval" },
+  { id: "advanced", label: "Advanced\u2026" },
+];
 
 const WEEKDAYS = [
-  { id: '1', label: 'Monday' },
-  { id: '2', label: 'Tuesday' },
-  { id: '3', label: 'Wednesday' },
-  { id: '4', label: 'Thursday' },
-  { id: '5', label: 'Friday' },
-  { id: '6', label: 'Saturday' },
-  { id: '0', label: 'Sunday' }
-]
+  { id: "1", label: "Monday" },
+  { id: "2", label: "Tuesday" },
+  { id: "3", label: "Wednesday" },
+  { id: "4", label: "Thursday" },
+  { id: "5", label: "Friday" },
+  { id: "6", label: "Saturday" },
+  { id: "0", label: "Sunday" },
+];
 
 const TIMES = (() => {
-  const out = []
+  const out = [];
   for (let h = 0; h < 24; h++) {
     for (const m of [0, 30]) {
-      const ampm = h < 12 ? 'AM' : 'PM'
-      const h12 = h % 12 === 0 ? 12 : h % 12
-      out.push({ id: `${h}:${m}`, label: `${h12}:${String(m).padStart(2, '0')} ${ampm}`, h, m })
+      const ampm = h < 12 ? "AM" : "PM";
+      const h12 = h % 12 === 0 ? 12 : h % 12;
+      out.push({
+        id: `${h}:${m}`,
+        label: `${h12}:${String(m).padStart(2, "0")} ${ampm}`,
+        h,
+        m,
+      });
     }
   }
-  return out
-})()
+  return out;
+})();
 
 /** Compose the Hermes schedule string from picker state. */
 function composeSchedule(state) {
-  const [h, m] = (state.time || '9:0').split(':').map(Number)
+  const [h, m] = (state.time || "9:0").split(":").map(Number);
 
   switch (state.freq) {
-    case 'once': {
-      const n = Math.max(1, parseInt(state.onceN, 10) || 1)
-      return `${n}${state.onceUnit || 'h'}`
+    case "once": {
+      const n = Math.max(1, parseInt(state.onceN, 10) || 1);
+      return `${n}${state.onceUnit || "h"}`;
     }
-    case 'hourly':
-      return 'every 1h'
-    case 'daily':
-      return `${m} ${h} * * *`
-    case 'weekdays':
-      return `${m} ${h} * * 1-5`
-    case 'weekly':
-      return `${m} ${h} * * ${state.weekday || '1'}`
-    case 'monthly':
-      return `${m} ${h} ${state.monthday || '1'} * *`
-    case 'interval': {
-      const n = Math.max(1, parseInt(state.intervalN, 10) || 1)
-      return `every ${n}${state.intervalUnit || 'h'}`
+    case "hourly":
+      return "every 1h";
+    case "daily":
+      return `${m} ${h} * * *`;
+    case "weekdays":
+      return `${m} ${h} * * 1-5`;
+    case "weekly":
+      return `${m} ${h} * * ${state.weekday || "1"}`;
+    case "monthly":
+      return `${m} ${h} ${state.monthday || "1"} * *`;
+    case "interval": {
+      const n = Math.max(1, parseInt(state.intervalN, 10) || 1);
+      return `every ${n}${state.intervalUnit || "h"}`;
     }
     default:
-      return state.raw || ''
+      return state.raw || "";
   }
 }
 
 function scheduleSummary(state) {
-  const t = TIMES.find(x => x.id === state.time)
-  const tl = t ? t.label : '9:00 AM'
+  const t = TIMES.find((x) => x.id === state.time);
+  const tl = t ? t.label : "9:00 AM";
 
-  const unitWord = u => (u === 'm' ? 'minute(s)' : u === 'd' ? 'day(s)' : 'hour(s)')
+  const unitWord = (u) =>
+    u === "m" ? "minute(s)" : u === "d" ? "day(s)" : "hour(s)";
   const cap =
-    state.freq !== 'once' && String(state.repeatN || '').trim()
+    state.freq !== "once" && String(state.repeatN || "").trim()
       ? `, ${Math.max(1, parseInt(state.repeatN, 10) || 1)} time(s) total`
-      : ''
+      : "";
 
   switch (state.freq) {
-    case 'once':
-      return `Runs once, ${Math.max(1, parseInt(state.onceN, 10) || 1)} ${unitWord(state.onceUnit)} from now`
-    case 'hourly':
-      return 'Runs at the top of every hour' + cap
-    case 'daily':
-      return `Runs every day at ${tl}` + cap
-    case 'weekdays':
-      return `Runs Monday\u2013Friday at ${tl}` + cap
-    case 'weekly':
-      return `Runs every ${(WEEKDAYS.find(w => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}` + cap
-    case 'monthly':
-      return `Runs on day ${state.monthday || '1'} of each month at ${tl}` + cap
-    case 'interval':
-      return `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${unitWord(state.intervalUnit)}` + cap
+    case "once":
+      return `Runs once, ${Math.max(1, parseInt(state.onceN, 10) || 1)} ${unitWord(state.onceUnit)} from now`;
+    case "hourly":
+      return "Runs at the top of every hour" + cap;
+    case "daily":
+      return `Runs every day at ${tl}` + cap;
+    case "weekdays":
+      return `Runs Monday\u2013Friday at ${tl}` + cap;
+    case "weekly":
+      return (
+        `Runs every ${(WEEKDAYS.find((w) => w.id === state.weekday) || WEEKDAYS[0]).label} at ${tl}` +
+        cap
+      );
+    case "monthly":
+      return (
+        `Runs on day ${state.monthday || "1"} of each month at ${tl}` + cap
+      );
+    case "interval":
+      return (
+        `Runs every ${Math.max(1, parseInt(state.intervalN, 10) || 1)} ${unitWord(state.intervalUnit)}` +
+        cap
+      );
     default:
-      return 'Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron'
+      return "Raw schedule \u2014 every Nm/Nh/Nd or 5-field cron";
   }
 }
 
@@ -3428,393 +4126,486 @@ function pickerSelect(value, onChange, options) {
     value,
     onValueChange: onChange,
     children: [
-      jsx(SelectTrigger, { className: 'h-8 rounded-md', children: jsx(SelectValue, {}) }),
+      jsx(SelectTrigger, {
+        className: "h-8 rounded-md",
+        children: jsx(SelectValue, {}),
+      }),
       jsx(SelectContent, {
-        children: options.map(o => jsx(SelectItem, { value: o.id, children: o.label }, o.id))
-      })
-    ]
-  })
+        children: options.map((o) =>
+          jsx(SelectItem, { value: o.id, children: o.label }, o.id),
+        ),
+      }),
+    ],
+  });
 }
 
 function SchedulePicker({ state, setState }) {
-  const upd = patch => setState(prev => ({ ...prev, ...patch }))
-  const needsTime = ['daily', 'weekdays', 'weekly', 'monthly'].includes(state.freq)
+  const upd = (patch) => setState((prev) => ({ ...prev, ...patch }));
+  const needsTime = ["daily", "weekdays", "weekly", "monthly"].includes(
+    state.freq,
+  );
 
-  return jsxs('div', {
-    className: 'grid gap-2',
+  return jsxs("div", {
+    className: "grid gap-2",
     children: [
-      jsxs('div', {
-        style: { display: 'grid', gridTemplateColumns: needsTime ? '1fr 1fr' : '1fr', gap: '8px' },
+      jsxs("div", {
+        style: {
+          display: "grid",
+          gridTemplateColumns: needsTime ? "1fr 1fr" : "1fr",
+          gap: "8px",
+        },
         children: [
-          pickerSelect(state.freq, v => upd({ freq: v }), FREQUENCIES),
-          needsTime ? pickerSelect(state.time, v => upd({ time: v }), TIMES) : null
-        ]
+          pickerSelect(state.freq, (v) => upd({ freq: v }), FREQUENCIES),
+          needsTime
+            ? pickerSelect(state.time, (v) => upd({ time: v }), TIMES)
+            : null,
+        ],
       }),
-      state.freq === 'once'
-        ? jsxs('div', {
-            style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+      state.freq === "once"
+        ? jsxs("div", {
+            style: {
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "8px",
+            },
             children: [
               jsx(Input, {
-                className: 'h-8',
-                placeholder: '30',
+                className: "h-8",
+                placeholder: "30",
                 value: state.onceN,
-                onChange: event => upd({ onceN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+                onChange: (event) =>
+                  upd({
+                    onceN: event.target.value
+                      .replace(/[^0-9]/g, "")
+                      .slice(0, 4),
+                  }),
               }),
-              pickerSelect(state.onceUnit, v => upd({ onceUnit: v }), [
-                { id: 'm', label: 'minutes from now' },
-                { id: 'h', label: 'hours from now' },
-                { id: 'd', label: 'days from now' }
-              ])
-            ]
+              pickerSelect(state.onceUnit, (v) => upd({ onceUnit: v }), [
+                { id: "m", label: "minutes from now" },
+                { id: "h", label: "hours from now" },
+                { id: "d", label: "days from now" },
+              ]),
+            ],
           })
         : null,
-      state.freq === 'weekly'
-        ? pickerSelect(state.weekday, v => upd({ weekday: v }), WEEKDAYS)
+      state.freq === "weekly"
+        ? pickerSelect(state.weekday, (v) => upd({ weekday: v }), WEEKDAYS)
         : null,
-      state.freq === 'monthly'
+      state.freq === "monthly"
         ? labeled(
-            'Day of month',
+            "Day of month",
             jsx(Input, {
-              className: 'h-8',
-              placeholder: '1',
+              className: "h-8",
+              placeholder: "1",
               value: state.monthday,
-              onChange: event => upd({ monthday: event.target.value.replace(/[^0-9]/g, '').slice(0, 2) })
-            })
+              onChange: (event) =>
+                upd({
+                  monthday: event.target.value
+                    .replace(/[^0-9]/g, "")
+                    .slice(0, 2),
+                }),
+            }),
           )
         : null,
-      state.freq === 'interval'
-        ? jsxs('div', {
-            style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' },
+      state.freq === "interval"
+        ? jsxs("div", {
+            style: {
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "8px",
+            },
             children: [
               jsx(Input, {
-                className: 'h-8',
-                placeholder: '2',
+                className: "h-8",
+                placeholder: "2",
                 value: state.intervalN,
-                onChange: event => upd({ intervalN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+                onChange: (event) =>
+                  upd({
+                    intervalN: event.target.value
+                      .replace(/[^0-9]/g, "")
+                      .slice(0, 4),
+                  }),
               }),
-              pickerSelect(state.intervalUnit, v => upd({ intervalUnit: v }), [
-                { id: 'm', label: 'minutes' },
-                { id: 'h', label: 'hours' },
-                { id: 'd', label: 'days' }
-              ])
-            ]
+              pickerSelect(
+                state.intervalUnit,
+                (v) => upd({ intervalUnit: v }),
+                [
+                  { id: "m", label: "minutes" },
+                  { id: "h", label: "hours" },
+                  { id: "d", label: "days" },
+                ],
+              ),
+            ],
           })
         : null,
-      state.freq === 'advanced'
+      state.freq === "advanced"
         ? jsx(Input, {
-            className: 'h-8 font-mono text-xs',
-            placeholder: 'every 1d \u00b7 every 2h \u00b7 0 9 * * * (cron)',
+            className: "h-8 font-mono text-xs",
+            placeholder: "every 1d \u00b7 every 2h \u00b7 0 9 * * * (cron)",
             value: state.raw,
-            onChange: event => upd({ raw: event.target.value })
+            onChange: (event) => upd({ raw: event.target.value }),
           })
         : null,
-      state.freq !== 'once' && state.freq !== 'advanced'
-        ? jsxs('div', {
-            className: 'flex items-center gap-2',
+      state.freq !== "once" && state.freq !== "advanced"
+        ? jsxs("div", {
+            className: "flex items-center gap-2",
             children: [
-              jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Stop after' }),
-              jsx(Input, {
-                className: 'h-7 w-16 text-xs',
-                placeholder: '\u221e',
-                value: state.repeatN,
-                onChange: event => upd({ repeatN: event.target.value.replace(/[^0-9]/g, '').slice(0, 4) })
+              jsx("span", {
+                className: "text-xs text-(--ui-text-tertiary)",
+                children: "Stop after",
               }),
-              jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: 'runs (blank = forever)' })
-            ]
+              jsx(Input, {
+                className: "h-7 w-16 text-xs",
+                placeholder: "\u221e",
+                value: state.repeatN,
+                onChange: (event) =>
+                  upd({
+                    repeatN: event.target.value
+                      .replace(/[^0-9]/g, "")
+                      .slice(0, 4),
+                  }),
+              }),
+              jsx("span", {
+                className: "text-xs text-(--ui-text-tertiary)",
+                children: "runs (blank = forever)",
+              }),
+            ],
           })
         : null,
-      jsx('div', {
-        className: 'text-[0.65rem] text-(--ui-text-quaternary)',
-        children: `${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || '\u2014'}`
-      })
-    ]
-  })
+      jsx("div", {
+        className: "text-[0.65rem] text-(--ui-text-quaternary)",
+        children: `${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || "\u2014"}`,
+      }),
+    ],
+  });
 }
 
 function defaultScheduleState() {
-  return { freq: 'daily', time: '9:0', weekday: '1', monthday: '1', intervalN: '2', intervalUnit: 'h', onceN: '30', onceUnit: 'm', repeatN: '', raw: '' }
+  return {
+    freq: "daily",
+    time: "9:0",
+    weekday: "1",
+    monthday: "1",
+    intervalN: "2",
+    intervalUnit: "h",
+    onceN: "30",
+    onceUnit: "m",
+    repeatN: "",
+    raw: "",
+  };
 }
 
 function CreateRoutineDialog({ bot, open, onClose }) {
-  const [name, setName] = useState('')
-  const [instruction, setInstruction] = useState('')
-  const [sched, setSched] = useState(defaultScheduleState())
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-  const activeProfile = useValue(host.state.profile)
-  const schedule = composeSchedule(sched)
+  const [name, setName] = useState("");
+  const [instruction, setInstruction] = useState("");
+  const [sched, setSched] = useState(defaultScheduleState());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const activeProfile = useValue(host.state.profile);
+  const schedule = composeSchedule(sched);
 
   const reset = () => {
-    setName('')
-    setInstruction('')
-    setSched(defaultScheduleState())
-    setBusy(false)
-    setError(null)
-  }
+    setName("");
+    setInstruction("");
+    setSched(defaultScheduleState());
+    setBusy(false);
+    setError(null);
+  };
 
   const submit = async () => {
-    const title = name.trim()
-    const task = instruction.trim()
+    const title = name.trim();
+    const task = instruction.trim();
 
     if (!title || !task || !schedule.trim() || busy) {
-      return
+      return;
     }
 
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
 
     try {
       const repeatN =
-        sched.freq !== 'once' && sched.freq !== 'advanced' && String(sched.repeatN || '').trim()
+        sched.freq !== "once" &&
+        sched.freq !== "advanced" &&
+        String(sched.repeatN || "").trim()
           ? Math.max(1, parseInt(sched.repeatN, 10) || 1)
-          : null
-      await host.request('cron.manage', {
-        action: 'add',
+          : null;
+      await host.request("cron.manage", {
+        action: "add",
         name: `[bot:${bot}] ${title}`,
         schedule: schedule.trim(),
         prompt: routinePrompt(bot, title, task, activeProfile),
-        ...(repeatN ? { repeat: repeatN } : {})
-      })
-      queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
-      host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
-      reset()
-      onClose()
+        ...(repeatN ? { repeat: repeatN } : {}),
+      });
+      queryClient.invalidateQueries({ queryKey: ROUTINES_KEY });
+      host.notify({ kind: "success", message: `Cronjob "${title}" scheduled` });
+      reset();
+      onClose();
     } catch (err) {
-      setBusy(false)
-      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
     }
-  }
+  };
 
   return jsx(Dialog, {
     open,
-    onOpenChange: value => {
+    onOpenChange: (value) => {
       if (!value && !busy) {
-        reset()
-        onClose()
+        reset();
+        onClose();
       }
     },
     children: jsxs(DialogContent, {
-      className: 'max-w-md',
+      className: "max-w-md",
       children: [
         jsxs(DialogHeader, {
           children: [
-            jsx(DialogTitle, { children: 'New Cronjob' }),
+            jsx(DialogTitle, { children: "New Cronjob" }),
             jsx(DialogDescription, {
-              children: `A recurring task ${displayName({ name: bot }, $botMeta.get()[bot])} runs on a schedule. Runs land in its own chat history.`
-            })
-          ]
+              children: `A recurring task ${displayName({ name: bot }, $botMeta.get()[bot])} runs on a schedule. Runs land in its own chat history.`,
+            }),
+          ],
         }),
-        jsxs('div', {
-          className: 'grid gap-3.5',
+        jsxs("div", {
+          className: "grid gap-3.5",
           children: [
             labeled(
-              'Name',
+              "Name",
               jsx(Input, {
                 autoFocus: true,
-                placeholder: 'Name this cronjob',
+                placeholder: "Name this cronjob",
                 value: name,
-                onChange: event => setName(event.target.value)
-              })
+                onChange: (event) => setName(event.target.value),
+              }),
             ),
             labeled(
-              'Instruction',
+              "Instruction",
               jsx(Textarea, {
-                className: 'min-h-20',
-                placeholder: 'What should this cronjob do each time it runs?',
+                className: "min-h-20",
+                placeholder: "What should this cronjob do each time it runs?",
                 value: instruction,
-                onChange: event => setInstruction(event.target.value)
-              })
+                onChange: (event) => setInstruction(event.target.value),
+              }),
             ),
-            labeled('When to run', jsx(SchedulePicker, { state: sched, setState: setSched })),
+            labeled(
+              "When to run",
+              jsx(SchedulePicker, { state: sched, setState: setSched }),
+            ),
             error
-              ? jsx('div', {
-                  className: 'rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)',
-                  children: error
+              ? jsx("div", {
+                  className:
+                    "rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-accent)",
+                  children: error,
                 })
-              : null
-          ]
+              : null,
+          ],
         }),
         jsxs(DialogFooter, {
           children: [
             jsx(Button, {
-              variant: 'ghost',
+              variant: "ghost",
               disabled: busy,
               onClick: () => {
-                reset()
-                onClose()
+                reset();
+                onClose();
               },
-              children: 'Cancel'
+              children: "Cancel",
             }),
             jsx(Button, {
-              disabled: busy || !name.trim() || !instruction.trim() || !schedule.trim(),
+              disabled:
+                busy || !name.trim() || !instruction.trim() || !schedule.trim(),
               onClick: submit,
-              children: busy ? 'Scheduling…' : 'Create Cronjob'
-            })
-          ]
-        })
-      ]
-    })
-  })
+              children: busy ? "Scheduling…" : "Create Cronjob",
+            }),
+          ],
+        }),
+      ],
+    }),
+  });
 }
 
 function RoutinesPane() {
-  const selected = useValue($selectedBot)
-  const gatewayProfile = useValue(host.state.profile)
+  const selected = useValue($selectedBot);
+  const gatewayProfile = useValue(host.state.profile);
   // The tile maps to the bot you're chatting with: the live gateway profile
   // is the truth once a chat opens; $selectedBot covers the gap between a
   // roster click and the profile swap landing.
-  const bot = (gatewayProfile || selected || 'default').trim() || 'default'
-  const meta = useValue($botMeta)[bot]
-  const { shape, color, image } = botAppearance(bot, meta)
-  const { data, isLoading, refetch } = useRoutines()
-  const [createOpen, setCreateOpen] = useState(false)
-  const jobs = (data?.jobs ?? []).filter(job => routineBot(job) === bot)
+  const bot = (gatewayProfile || selected || "default").trim() || "default";
+  const meta = useValue($botMeta)[bot];
+  const { shape, color, image } = botAppearance(bot, meta);
+  const { data, isLoading, refetch } = useRoutines();
+  const [createOpen, setCreateOpen] = useState(false);
+  const jobs = (data?.jobs ?? []).filter((job) => routineBot(job) === bot);
 
-  return jsxs('div', {
-    className: 'flex h-full flex-col',
+  return jsxs("div", {
+    className: "flex h-full flex-col",
     children: [
-      jsxs('div', {
-        className: 'flex items-center gap-2 px-3 pt-3 pb-2',
+      jsxs("div", {
+        className: "flex items-center gap-2 px-3 pt-3 pb-2",
         children: [
           jsx(BotFace, { shape, color, image, size: 22, name: bot }),
-          jsxs('div', {
-            className: 'min-w-0 flex-1',
+          jsxs("div", {
+            className: "min-w-0 flex-1",
             children: [
-              jsxs('div', {
-                className: 'flex min-w-0 items-baseline gap-1.5 truncate',
+              jsxs("div", {
+                className: "flex min-w-0 items-baseline gap-1.5 truncate",
                 children: [
-                  jsx('div', {
-                    className: 'truncate text-xs font-semibold',
-                    children: displayName({ name: bot }, meta)
+                  jsx("div", {
+                    className: "truncate text-xs font-semibold",
+                    children: displayName({ name: bot }, meta),
                   }),
                   showsHandle(bot, meta)
-                    ? jsx('span', {
-                        className: 'shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)',
-                        children: `@${botHandle(bot)}`
+                    ? jsx("span", {
+                        className:
+                          "shrink-0 font-mono text-[0.65rem] text-(--ui-text-quaternary)",
+                        children: `@${botHandle(bot)}`,
                       })
-                    : null
-                ]
+                    : null,
+                ],
               }),
-              jsx('div', {
-                className: 'text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)',
-                children: 'Cronjobs'
-              })
-            ]
+              jsx("div", {
+                className:
+                  "text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)",
+                children: "Cronjobs",
+              }),
+            ],
           }),
           jsx(Tip, {
-            label: 'New Cronjob',
-            children: jsx('button', {
-              type: 'button',
+            label: "New Cronjob",
+            children: jsx("button", {
+              type: "button",
               className:
-                'flex size-6 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                "flex size-6 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground",
               onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: 'add' })
-            })
-          })
-        ]
+              children: jsx(Codicon, { name: "add" }),
+            }),
+          }),
+        ],
       }),
-      jsx('div', { className: 'mx-3 border-t border-(--ui-stroke-secondary)' }),
+      jsx("div", { className: "mx-3 border-t border-(--ui-stroke-secondary)" }),
       isLoading
-        ? jsx('div', {
-            className: 'flex flex-1 items-center justify-center',
-            children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
+        ? jsx("div", {
+            className: "flex flex-1 items-center justify-center",
+            children: jsx(GlyphSpinner, {
+              spinner: "breathe",
+              className: "text-(--ui-text-tertiary)",
+            }),
           })
         : jobs.length === 0
-          ? jsxs('div', {
-              className: 'flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center',
+          ? jsxs("div", {
+              className:
+                "flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center",
               children: [
-                jsx(Codicon, { name: 'calendar', className: 'text-[1.6rem] text-(--ui-text-quaternary)' }),
-                jsx('div', {
-                  className: 'text-xs leading-5 text-(--ui-text-tertiary)',
-                  children: 'Cronjobs are recurring tasks this agent runs on a schedule.'
+                jsx(Codicon, {
+                  name: "calendar",
+                  className: "text-[1.6rem] text-(--ui-text-quaternary)",
+                }),
+                jsx("div", {
+                  className: "text-xs leading-5 text-(--ui-text-tertiary)",
+                  children:
+                    "Cronjobs are recurring tasks this agent runs on a schedule.",
                 }),
                 jsx(Button, {
-                  variant: 'secondary',
-                  size: 'sm',
+                  variant: "secondary",
+                  size: "sm",
                   onClick: () => setCreateOpen(true),
-                  children: 'Create Cronjob'
-                })
-              ]
+                  children: "Create Cronjob",
+                }),
+              ],
             })
           : jsx(ScrollArea, {
-              className: 'min-h-0 flex-1',
-              children: jsx('div', {
-                className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, onChanged: () => void refetch() }, job.job_id))
-              })
+              className: "min-h-0 flex-1",
+              children: jsx("div", {
+                className: "grid gap-1.5 px-2.5 py-2",
+                children: jobs.map((job) =>
+                  jsx(
+                    RoutineRow,
+                    { job, onChanged: () => void refetch() },
+                    job.job_id,
+                  ),
+                ),
+              }),
             }),
       jsx(CreateRoutineDialog, {
         bot,
         open: createOpen,
         onClose: () => {
-          setCreateOpen(false)
-          void refetch()
-        }
-      })
-    ]
-  })
+          setCreateOpen(false);
+          void refetch();
+        },
+      }),
+    ],
+  });
 }
 
 // ── roster pane ──────────────────────────────────────────────────────────────
 
 function BotsPane() {
-  const { data, error, isLoading, refetch } = useRoster()
-  const gatewayUp = useValue(host.state.gateway) === 'open'
-  const [createOpen, setCreateOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
+  const { data, error, isLoading, refetch } = useRoster();
+  const gatewayUp = useValue(host.state.gateway) === "open";
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
 
   // The socket opening (boot, SSH reconnect, sleep/wake) is the signal to
   // retry immediately instead of waiting out the poll interval.
+  // On reconnect, reset watermarks so the next poll re-seeds without
+  // marking old history as unread (prevents burst toasts after sleep).
+  const prevGatewayUp = useRef(gatewayUp);
   useEffect(() => {
-    if (gatewayUp) {
-      void refetch()
+    if (gatewayUp && !prevGatewayUp.current) {
+      resetWatermarks();
     }
-  }, [gatewayUp, refetch])
-  const allMeta = $botMeta.get()
+    prevGatewayUp.current = gatewayUp;
+    if (gatewayUp) {
+      void refetch();
+    }
+  }, [gatewayUp, refetch]);
+  const allMeta = $botMeta.get();
   // Messaging-app order: most recent activity first, where "activity" is
   // the newest of (bot created, last message in any of its sessions). A
   // freshly created bot tops the list until another bot gets a message.
   // No special slot for the primary bot — it competes on recency too.
-  const activityOf = bot => {
-    const created = allMeta[bot.name]?.created || bot.ui_meta?.['hermes-bots']?.created || 0
-    const lastMsg = (bot.last_session?.last_active || 0) * 1000
+  const activityOf = (bot) => {
+    const created =
+      allMeta[bot.name]?.created || bot.ui_meta?.["hermes-bots"]?.created || 0;
+    const lastMsg = (bot.last_session?.last_active || 0) * 1000;
 
-    return Math.max(created, lastMsg)
-  }
+    return Math.max(created, lastMsg);
+  };
   // Pinned bots (right-click → Pin) float to the top as a group; within the
   // pinned group and within the unpinned group, recency still rules. A
   // plain boolean flag in bot-meta (rides ui_meta to every machine).
-  const isPinned = bot => Boolean(allMeta[bot.name]?.pinned)
+  const isPinned = (bot) => Boolean(allMeta[bot.name]?.pinned);
   // Resilience (@wesleysimplicio, #13): a failed refresh must not erase a
   // roster the user already had — mixed local+cloud gateways and remotes
   // waking from sleep fail transiently. Render the last good snapshot with
   // a notice; the full error card is reserved for "never had a roster".
-  const live = Array.isArray(data?.profiles) ? data.profiles : null
-  const source = live ?? (error ? $lastRoster.get() : [])
+  const live = Array.isArray(data?.profiles) ? data.profiles : null;
+  const source = live ?? (error ? $lastRoster.get() : []);
   const roster = source.slice().sort((a, b) => {
-    const pa = isPinned(a) ? 1 : 0
-    const pb = isPinned(b) ? 1 : 0
+    const pa = isPinned(a) ? 1 : 0;
+    const pb = isPinned(b) ? 1 : 0;
 
     if (pa !== pb) {
-      return pb - pa
+      return pb - pa;
     }
 
-    return activityOf(b) - activityOf(a)
-  })
+    return activityOf(b) - activityOf(a);
+  });
 
   if (live) {
-    $lastRoster.set(roster)
-    mergeServerMeta(live)
-    pullServerAvatars(live)
-    trackInboundActivity(live)
+    $lastRoster.set(roster);
+    mergeServerMeta(live);
+    pullServerAvatars(live);
+    trackInboundActivity(live);
 
     // Pre-dial each bot's gateway socket so the first click doesn't pay
     // the backend spawn + connect cost (SDK door from hermes-agent#85954;
     // feature-detected — absent on older desktops, harmless to skip).
-    if (typeof host.warmProfile === 'function') {
+    if (typeof host.warmProfile === "function") {
       for (const bot of live) {
         try {
-          host.warmProfile(bot.name)
+          host.warmProfile(bot.name);
         } catch {
           /* warm is best-effort */
         }
@@ -3822,188 +4613,214 @@ function BotsPane() {
     }
   }
 
-  const staleNotice = error && !live && roster.length
-    ? 'Roster refresh failed — showing the last good list.' + (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
-    : null
+  const staleNotice =
+    error && !live && roster.length
+      ? "Roster refresh failed — showing the last good list." +
+        (gatewayUp ? "" : " Waiting for the gateway to reconnect…")
+      : null;
 
-  return jsxs('div', {
-    className: 'flex h-full flex-col',
+  return jsxs("div", {
+    className: "flex h-full flex-col",
     children: [
-      jsxs('div', {
-        className: 'flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5',
+      jsxs("div", {
+        className:
+          "flex items-center justify-between gap-2 px-2.5 pt-2.5 pb-1.5",
         children: [
-          jsx('span', {
-            className: 'text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
-            children: 'Bots'
+          jsx("span", {
+            className:
+              "text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)",
+            children: "Bots",
           }),
           jsx(Tip, {
-            label: 'New Agent',
-            children: jsx('button', {
-              type: 'button',
+            label: "New Agent",
+            children: jsx("button", {
+              type: "button",
               className:
-                'flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+                "flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground",
               onClick: () => setCreateOpen(true),
-              children: jsx(Codicon, { name: 'add' })
-            })
-          })
-        ]
+              children: jsx(Codicon, { name: "add" }),
+            }),
+          }),
+        ],
       }),
       staleNotice
-        ? jsx('div', {
-            className: 'mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-            children: staleNotice
+        ? jsx("div", {
+            className:
+              "mx-2.5 mb-1 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)",
+            children: staleNotice,
           })
         : null,
       isLoading && !roster.length
-        ? jsx('div', {
-            className: 'flex flex-1 items-center justify-center',
-            children: jsx(GlyphSpinner, { spinner: 'breathe', className: 'text-(--ui-text-tertiary)' })
+        ? jsx("div", {
+            className: "flex flex-1 items-center justify-center",
+            children: jsx(GlyphSpinner, {
+              spinner: "breathe",
+              className: "text-(--ui-text-tertiary)",
+            }),
           })
         : error && !roster.length
-          ? jsxs('div', {
-              className: 'grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)',
+          ? jsxs("div", {
+              className:
+                "grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)",
               children: [
-                jsx('div', {
+                jsx("div", {
                   children: gatewayUp
-                    ? `Roster unavailable: ${error instanceof Error ? error.message : 'gateway error'}. If your gateway predates profiles.list, update Hermes and restart the gateway.`
-                    : 'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
+                    ? `Roster unavailable: ${error instanceof Error ? error.message : "gateway error"}. If your gateway predates profiles.list, update Hermes and restart the gateway.`
+                    : "Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)",
                 }),
                 jsx(Button, {
-                  variant: 'secondary',
-                  size: 'sm',
-                  className: 'justify-self-start',
+                  variant: "secondary",
+                  size: "sm",
+                  className: "justify-self-start",
                   onClick: () => void refetch(),
-                  children: 'Retry now'
-                })
-              ]
+                  children: "Retry now",
+                }),
+              ],
             })
           : roster.length === 0
             ? jsx(EmptyState, {
-                icon: 'hubot',
-                title: 'No agents yet',
-                description: 'Create your first teammate.'
+                icon: "hubot",
+                title: "No agents yet",
+                description: "Create your first teammate.",
               })
             : jsx(ScrollArea, {
-                className: 'hermes-bots-roster min-h-0 flex-1',
-                children: jsx('div', {
-                  className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                  children: roster.map(bot => jsx(BotRow, { bot, onEdit: setEditing }, bot.name))
-                })
+                className: "hermes-bots-roster min-h-0 flex-1",
+                children: jsx("div", {
+                  className: "grid w-full min-w-0 gap-0.5 px-1.5 pb-2",
+                  children: roster.map((bot) =>
+                    jsx(BotRow, { bot, onEdit: setEditing }, bot.name),
+                  ),
+                }),
               }),
-      jsx('div', {
-        className: 'border-t border-(--ui-stroke-secondary) p-2',
+      jsx("div", {
+        className: "border-t border-(--ui-stroke-secondary) p-2",
         children: jsxs(Button, {
-          className: 'w-full justify-center gap-1.5',
-          variant: 'secondary',
+          className: "w-full justify-center gap-1.5",
+          variant: "secondary",
           onClick: () => setCreateOpen(true),
-          children: [jsx(Codicon, { name: 'add' }), 'New Agent']
-        })
+          children: [jsx(Codicon, { name: "add" }), "New Agent"],
+        }),
       }),
       jsx(CreateAgentDialog, {
         open: createOpen,
         onClose: () => {
-          setCreateOpen(false)
-          void refetch()
+          setCreateOpen(false);
+          void refetch();
         },
-        roster
+        roster,
       }),
       jsx(EditProfileDialog, {
         bot: editing,
         open: Boolean(editing),
         onClose: () => {
-          setEditing(null)
-          void refetch()
-        }
-      })
-    ]
-  })
+          setEditing(null);
+          void refetch();
+        },
+      }),
+    ],
+  });
 }
 
 // ── plugin ───────────────────────────────────────────────────────────────────
 
 export default {
   id: ID,
-  name: 'Bots',
+  name: "Bots",
   register(ctx) {
-    pluginCtx = ctx
+    pluginCtx = ctx;
 
     // Keyframes for the pet bob — injected because plugin classes aren't in
     // the app's precompiled CSS. Idempotent across hot reloads.
-    if (!document.getElementById('hermes-bots-keyframes')) {
-      const style = document.createElement('style')
-      style.id = 'hermes-bots-keyframes'
-      style.textContent = '@keyframes hermes-bots-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }'
-      document.head.appendChild(style)
+    if (!document.getElementById("hermes-bots-keyframes")) {
+      const style = document.createElement("style");
+      style.id = "hermes-bots-keyframes";
+      style.textContent =
+        "@keyframes hermes-bots-bob { from { transform: translateY(0); } to { transform: translateY(-3px); } }";
+      document.head.appendChild(style);
     }
 
     // Hydrate persisted avatars/titles. Storage may be sync, async, or
     // absent depending on shell version — normalize through Promise.resolve
     // inside a try so a storage quirk can NEVER fail the plugin load.
     try {
-      Promise.resolve(ctx.storage?.get?.('bot-meta'))
-        .then(value => {
-          if (value && typeof value === 'object') {
-            $botMeta.set(value)
+      Promise.resolve(ctx.storage?.get?.("bot-meta"))
+        .then((value) => {
+          if (value && typeof value === "object") {
+            const migrated = Object.fromEntries(
+              Object.entries(value).map(([k, v]) => [k, migrateChatPin(v)]),
+            );
+            $botMeta.set(migrated);
+            // Persist migration if anything changed
+            if (JSON.stringify(migrated) !== JSON.stringify(value)) {
+              try {
+                Promise.resolve(ctx.storage?.set?.("bot-meta", migrated)).catch(
+                  () => undefined,
+                );
+              } catch {}
+            }
           }
         })
-        .catch(() => undefined)
+        .catch(() => undefined);
     } catch {
       /* no storage on this shell — defaults stay */
     }
 
     // Routines follow the chat you're in: track the live gateway profile.
-    host.state.profile.listen(profile => {
-      if (profile && typeof profile === 'string') {
-        $selectedBot.set(profile)
+    host.state.profile.listen((profile) => {
+      if (profile && typeof profile === "string") {
+        $selectedBot.set(profile);
       }
-    })
+    });
 
     ctx.register({
-      id: 'pane',
-      area: 'panes',
-      title: 'Bots',
-      data: { placement: 'left', width: '260px' },
-      render: () => jsx(BotsPane, {})
-    })
+      id: "pane",
+      area: "panes",
+      title: "Bots",
+      data: { placement: "left", width: "260px" },
+      render: () => jsx(BotsPane, {}),
+    });
 
     // Routines — its OWN tiling pane splitting the workspace's right edge
     // (NOT the collapsible right sidebar; placement 'right' is that sidebar's
     // role and hides the pane until "Show Right Sidebar").
     ctx.register({
-      id: 'routines',
-      area: 'panes',
-      title: 'Cronjobs',
+      id: "routines",
+      area: "panes",
+      title: "Cronjobs",
       data: {
-        placement: 'main',
-        dock: { pane: 'workspace', pos: 'right' },
-        width: '250px'
+        placement: "main",
+        dock: { pane: "workspace", pos: "right" },
+        width: "250px",
       },
-      render: () => jsx(RoutinesPane, {})
-    })
+      render: () => jsx(RoutinesPane, {}),
+    });
 
     ctx.register({
-      id: 'new-agent',
+      id: "new-agent",
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New Agent…',
-        keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
+        label: "New Agent…",
+        keywords: ["bot", "agent", "profile", "teammate", "create"],
         run: () => {
-          host.notify({ kind: 'info', message: 'Open the Bots pane and hit “New Agent”.' })
-        }
-      }
-    })
+          host.notify({
+            kind: "info",
+            message: "Open the Bots pane and hit “New Agent”.",
+          });
+        },
+      },
+    });
 
     // @-mention middleware: "@<bot> do the thing" in any chat becomes an
     // explicit handoff instruction the active agent's SOUL.md knows how to
     // execute. Names are validated against the LIVE roster so
     // "user@example.com" or an unknown @ passes through untouched.
     ctx.register({
-      id: 'mention-middleware',
+      id: "mention-middleware",
       area: COMPOSER_AREAS.middleware,
       data: {
-        handler: async draft => {
-          const text = draft.text || ''
+        handler: async (draft) => {
+          const text = draft.text || "";
 
           // /new inside a bot's canonical forever-chat would fork the
           // relationship into a scratch session — the one thing Bots mode
@@ -4011,58 +4828,78 @@ export default {
           // fresh working context, SAME conversation) and say so. Only
           // guards the canonical chat: Sessions-mode scratchpads on the
           // same profile keep full /new freedom.
-          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
+          const slashNew = /^\/(new|reset)\s*$/.exec(text.trim());
 
           if (slashNew) {
-            const activeBot = $selectedBot.get()
-            const meta = activeBot ? $botMeta.get()[activeBot] : null
-            const pinnedId = meta?.chat_pin || null
-            const currentId = host.activeSessionId?.get?.() ?? null
+            const activeBot = $selectedBot.get();
+            const meta = activeBot ? $botMeta.get()[activeBot] : null;
+            const pinnedId = meta?.chat || meta?.chat_pin || null;
+            const currentId = host.activeSessionId?.get?.() ?? null;
 
-            if (activeBot && pinnedId && currentId && String(currentId) === String(pinnedId)) {
+            if (
+              activeBot &&
+              pinnedId &&
+              currentId &&
+              String(currentId) === String(pinnedId)
+            ) {
               host.notify({
-                kind: 'info',
-                title: 'This chat never resets',
+                kind: "info",
+                title: "This chat never resets",
                 message:
-                  'Bot chats are one continuous conversation — compacting instead. ' +
-                  'For a throwaway session with this agent, use Sessions mode.'
-              })
+                  "Bot chats are one continuous conversation — compacting instead. " +
+                  "For a throwaway session with this agent, use Sessions mode.",
+              });
 
-              return { ...draft, text: '/compact' }
+              return { ...draft, text: "/compact" };
             }
           }
 
           if (!/(^|\s)@[a-z0-9][a-z0-9_-]*/i.test(text)) {
-            return draft
+            return draft;
           }
 
-          let names = []
+          let names = [];
           try {
-            const res = await host.request('profiles.list', { include_sessions: false })
-            names = (res?.profiles ?? []).map(p => p.name)
+            const res = await host.request("profiles.list", {
+              include_sessions: false,
+            });
+            names = (res?.profiles ?? []).map((p) => p.name);
           } catch {
-            return draft
+            return draft;
           }
 
           // Mentions in code are code, not handoffs (#20).
-          const prose = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ')
-          const active = (host.state.profile.get() || 'default').trim() || 'default'
-          const mentioned = []
+          const prose = text
+            .replace(/```[\s\S]*?```/g, " ")
+            .replace(/`[^`\n]*`/g, " ");
+          const active =
+            (host.state.profile.get() || "default").trim() || "default";
+          const mentioned = [];
 
-          for (const match of prose.matchAll(/(^|\s)@([a-z0-9][a-z0-9_-]*)/gi)) {
-            let name = match[2].toLowerCase()
+          for (const match of prose.matchAll(
+            /(^|\s)@([a-z0-9][a-z0-9_-]*)/gi,
+          )) {
+            let name = match[2].toLowerCase();
 
-            if (name === 'hermes' && !names.includes('hermes') && names.includes('default')) {
-              name = 'default'
+            if (
+              name === "hermes" &&
+              !names.includes("hermes") &&
+              names.includes("default")
+            ) {
+              name = "default";
             }
 
-            if (names.includes(name) && name !== active && !mentioned.includes(name)) {
-              mentioned.push(name)
+            if (
+              names.includes(name) &&
+              name !== active &&
+              !mentioned.includes(name)
+            ) {
+              mentioned.push(name);
             }
           }
 
           if (!mentioned.length) {
-            return draft
+            return draft;
           }
 
           // The ACTIVE BOT composes the message — it understands intent; a
@@ -4070,17 +4907,44 @@ export default {
           // recipient's canonical Bot Chat, so their side reads as a normal
           // DM (message bubble + their reply), and the reply prints on
           // stdout for the sender to relay.
-          const activeMeta = $botMeta.get()[active]
-          const senderName = displayName({ name: active, title: activeMeta?.title }, activeMeta)
+          const activeMeta = $botMeta.get()[active];
+          const rawSender = displayName(
+            { name: active, title: activeMeta?.title },
+            activeMeta,
+          );
+          // Sanitize display name for shell example — titles are free text and may contain quotes/newlines.
+          const senderName =
+            String(rawSender)
+              .replace(/[\r\n"`$\\]/g, "")
+              .slice(0, 40) || "agent";
+          const safeHandle =
+            botHandle(active)
+              .replace(/[^a-z0-9_-]/gi, "")
+              .slice(0, 32) || "agent";
+          const prefixExample = `Message from \uD83E\uDD16 ${senderName} (@${safeHandle}): `;
           const note =
-            '\n\n[@mention handoff — for each mentioned agent (' + mentioned.map(botHandle).join(', ') + '): ' +
-            'COMPOSE a message from you (' + senderName + ') to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n' +
-            mentioned.map(n => '`hermes -p ' + n + ' chat --in ~ -c "Bot Chat" -Q -q "Message from \uD83E\uDD16 ' + senderName + ' (@' + botHandle(active) + '): <your composed message>"`').join('\n') +
+            "\n\n[@mention handoff — for each mentioned agent (" +
+            mentioned.map(botHandle).join(", ") +
+            "): " +
+            "COMPOSE a message from you (" +
+            senderName +
+            ") to that agent conveying what the user wants — do not forward this text verbatim. Send it with exactly one terminal call, run with background=true AND notify_on_complete=true (the recipient may take minutes; the user must not be blocked):\n" +
+            mentioned
+              .map(
+                (n) =>
+                  "`hermes -p " +
+                  n +
+                  ' chat --in ~ -c "Bot Chat" -Q -q ' +
+                  JSON.stringify(prefixExample + "<your composed message>") +
+                  "`",
+              )
+              .join("\n") +
             '\nAfter dispatching, tell the user the message was sent and END YOUR TURN — do not wait or poll; when the background process completes, its notification carries the reply — relay it then, attributed to that agent. If it fails with "No session found matching \'Bot Chat\'", send once without the -c flag, then run `hermes -p <agent> sessions rename <session_id from the output> "Bot Chat"`. ' +
-            'Relay the reply back to the user, attributed to that agent.]'
+            "Relay the reply back to the user, attributed to that agent.]";
 
-          return { ...draft, text: text + note }
-        }      }
-    })
-  }
-}
+          return { ...draft, text: text + note };
+        },
+      },
+    });
+  },
+};
