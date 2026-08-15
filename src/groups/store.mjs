@@ -70,7 +70,13 @@ export function deleteGroup(id) {
  * Pass `excludeSender: false` and `allowExternalSender: true` for human-initiated
  * fan-out to every member.
  */
-export function postToGroup({ groupId, senderName, content, excludeSender = true, allowExternalSender = false }) {
+export function postToGroup({
+ groupId,
+ senderName,
+ content,
+ excludeSender = true,
+ allowExternalSender = false,
+}) {
  const groups = $groups.get();
  const idx = groups.findIndex((g) => g.id === groupId);
  if (idx === -1) throw new Error(`Group ${groupId} not found`);

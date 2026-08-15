@@ -348,7 +348,10 @@ export function GroupsSection({ roster }) {
     // Human-initiated group message: fan-out to every bot, not excluding the sender.
     // "You" is the human, so every member gets the message (the room is the human's broadcast).
     const sender = "You";
-    console.log(`[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`, group.memberIds);
+    console.log(
+      `[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`,
+      group.memberIds,
+    );
 
     let result;
     try {
