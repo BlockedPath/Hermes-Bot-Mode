@@ -156,7 +156,11 @@ test("security: command substitution in content does NOT execute", () => {
       payload.endsWith(malicious),
       `-q argument must be delivered verbatim; got: ${payload}`,
     );
-    assert.equal(argv[argv.length - 1], payload, "-q must be the last argument");
+    assert.equal(
+      argv[argv.length - 1],
+      payload,
+      "-q must be the last argument",
+    );
   } finally {
     cleanup();
   }
@@ -196,9 +200,13 @@ test("security: shellQuote is not JSON.stringify (regression guard)", async () =
   assert.equal(shellQuote("$(id)"), "'$(id)'");
   assert.equal(shellQuote("it's"), "'it'\\''s'");
   assert.equal(
-    execFileSync("/bin/sh", ["-c", `printf %s ${shellQuote("$(id) `id` ${x}")}`], {
-      encoding: "utf8",
-    }),
+    execFileSync(
+      "/bin/sh",
+      ["-c", `printf %s ${shellQuote("$(id) `id` ${x}")}`],
+      {
+        encoding: "utf8",
+      },
+    ),
     "$(id) `id` ${x}",
   );
 });

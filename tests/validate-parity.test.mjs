@@ -13,11 +13,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
-import {
-  NAME_RE,
-  shellQuote,
-  sanitizeTitle,
-} from "../lib/validate.mjs";
+import { NAME_RE, shellQuote, sanitizeTitle } from "../lib/validate.mjs";
 
 const pluginSource = readFileSync(
   new URL("../plugin.js", import.meta.url),

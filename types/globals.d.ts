@@ -17,9 +17,9 @@ declare module "react";
 declare module "react/jsx-runtime";
 
 interface Window {
-  /** Injected by the Electron shell; absent in the browser preview. */
-  hermesDesktop?: {
-    openExternal?: (url: string) => void;
-    [key: string]: unknown;
-  };
+ /** Injected by the Electron shell; absent in the browser preview. */
+ hermesDesktop?: {
+  openExternal?: (url: string) => void;
+  [key: string]: unknown;
+ };
 }

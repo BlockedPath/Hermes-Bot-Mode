@@ -85,11 +85,13 @@ function shellQuote(arg) {
  *  up in prose an LLM is instructed to paste into a terminal. Defence in depth
  *  on top of shellQuote(). Mirror of sanitizeTitle() in lib/validate.mjs. */
 function sanitizeTitle(title, max = 80) {
-  return String(title || "")
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\0-\x1f\x7f"'`$\\]/g, "")
-    .slice(0, max)
-    .trim();
+  return (
+    String(title || "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\0-\x1f\x7f"'`$\\]/g, "")
+      .slice(0, max)
+      .trim()
+  );
 }
 
 /** Captured in register() so components can reach plugin storage. */
