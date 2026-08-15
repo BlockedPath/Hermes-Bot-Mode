@@ -779,13 +779,38 @@ async function mcpSetupSupported() {
   return _mcpRpcSupported
 }
 
-function McpSetupButton({ profile, entry, onDone }) {
+function McpSetupButton({ profile, entry, onDone, ensureProfile }) {
   // entry: { name, requires:[env keys], auth?, fromCatalog, installed }
+  // profile may be null at first (New Agent: the profile isn't created yet).
+  // ensureProfile() lazily creates it on the first setup action and returns the
+  // slug, so OAuth / API-key setup works DURING creation, not only in Edit.
   const [phase, setPhase] = useState('idle') // idle | keys | oauth | busy | done | error
   const [supported, setSupported] = useState(null)
   const [keyValues, setKeyValues] = useState({})
   const [message, setMessage] = useState('')
   const pollRef = useRef(null)
+  const profileRef = useRef(profile || null)
+
+  useEffect(() => {
+    if (profile) {
+      profileRef.current = profile
+    }
+  }, [profile])
+
+  // Resolve the target profile, creating it on demand for the New Agent flow.
+  const resolveProfile = async () => {
+    if (profileRef.current) {
+      return profileRef.current
+    }
+    if (ensureProfile) {
+      const created = await ensureProfile()
+      if (created) {
+        profileRef.current = created
+      }
+      return created
+    }
+    return null
+  }
 
   useEffect(() => {
     let alive = true
@@ -808,6 +833,11 @@ function McpSetupButton({ profile, entry, onDone }) {
     // Ensure the server exists in the target profile first (add from catalog).
     setPhase('busy')
     setMessage('')
+    const profile = await resolveProfile()
+    if (!profile) {
+      setPhase('idle')
+      return
+    }
     if (entry.fromCatalog && !entry.installed) {
       const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
       if (!add.ok) {
@@ -821,6 +851,12 @@ function McpSetupButton({ profile, entry, onDone }) {
 
   const submitKeys = async () => {
     setPhase('busy')
+    const profile = profileRef.current
+    if (!profile) {
+      setPhase('error')
+      setMessage('No target profile')
+      return
+    }
     for (const k of requires) {
       const val = (keyValues[k] || '').trim()
       if (!val) {
@@ -848,6 +884,11 @@ function McpSetupButton({ profile, entry, onDone }) {
   const beginOAuth = async () => {
     setPhase('busy')
     setMessage('')
+    const profile = await resolveProfile()
+    if (!profile) {
+      setPhase('idle')
+      return
+    }
     if (entry.fromCatalog && !entry.installed) {
       const add = await mcpRpc('mcp.servers.add', { profile, name: entry.name, preset: entry.name })
       if (!add.ok) {
@@ -3033,10 +3074,11 @@ function EditProfileDialog({ bot, open, onClose }) {
 
 function CreateAgentDialog({ open, onClose, roster }) {
   const [name, setName] = useState('')
-  // Create mode: the profile doesn't exist yet, so per-profile MCP credential
-  // setup can't target it — the row shows a "save the agent first" hint and
-  // the live setup UI lives in Edit Profile (where bot.name exists).
-  const setupProfile = null
+  // Create mode: the profile is created LAZILY. Capability toggles are staged in
+  // component state; the profile is materialized either on Create (submit) or on
+  // the first MCP credential setup (ensureAgentCreated), whichever comes first —
+  // so OAuth / API-key setup works DURING creation, not only after in Edit.
+  const createdRef = useRef(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [shape, setShape] = useState('circle')
@@ -3082,6 +3124,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setCapFilter('')
     setBusy(false)
     setError(null)
+    createdRef.current = null
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -3114,6 +3157,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
               enabled: false,
               fromCatalog: true,
               installed: s.installed,
+              auth: s.auth,
               requires: s.requires || [],
               description: s.description || ''
             }))
@@ -3132,6 +3176,62 @@ function CreateAgentDialog({ open, onClose, roster }) {
     )
   }
 
+  // Materialize the profile exactly once. Returns the slug, or null on failure.
+  // Called by submit() and by the MCP setup buttons (so credentials can be
+  // configured mid-creation). Idempotent via createdRef.
+  const ensureAgentCreated = async () => {
+    if (createdRef.current) {
+      return createdRef.current
+    }
+    if (!valid || taken) {
+      return null
+    }
+
+    const descriptionText = [title, description].filter(Boolean).join(' — ')
+
+    await host.request('profiles.create', {
+      name: slug,
+      description: descriptionText,
+      clone_from: cloneFrom === '__none__' ? null : cloneFrom,
+      no_skills: noSkills,
+      // Shared (not copied) auth keeps ONE OAuth/token pool with the main
+      // profile, so refreshes can't invalidate each other. Older gateways
+      // ignore the param and copy — still functional, just forked.
+      share_auth: shareAuth,
+      soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
+      ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
+    })
+
+    createdRef.current = slug
+
+    // Apply capability picks from the Advanced tabs (best-effort; the
+    // profile exists either way and Edit Profile can finish the job).
+    try {
+      const capPayload = {}
+
+      if (dirtyCaps.skills && caps) {
+        capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
+      }
+      if (dirtyCaps.toolsets && caps) {
+        const en = caps.toolsets.filter(t => t.enabled)
+        capPayload.enabled_toolsets =
+          en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
+      }
+      if (dirtyCaps.mcp && caps) {
+        capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+      }
+      if (Object.keys(capPayload).length) {
+        await host.request('profiles.configure', { name: slug, ...capPayload })
+      }
+    } catch {
+      /* capability application is best-effort */
+    }
+
+    saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
+    queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+    return slug
+  }
+
   const submit = async () => {
     if (!valid || taken || busy) {
       return
@@ -3141,46 +3241,13 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setError(null)
 
     try {
-      const descriptionText = [title, description].filter(Boolean).join(' — ')
-
-      await host.request('profiles.create', {
-        name: slug,
-        description: descriptionText,
-        clone_from: cloneFrom === '__none__' ? null : cloneFrom,
-        no_skills: noSkills,
-        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
-        // profile, so refreshes can't invalidate each other. Older gateways
-        // ignore the param and copy — still functional, just forked.
-        share_auth: shareAuth,
-        soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
-        ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
-      })
-
-      // Apply capability picks from the Advanced tabs (best-effort; the
-      // profile exists either way and Edit Profile can finish the job).
-      try {
-        const capPayload = {}
-
-        if (dirtyCaps.skills && caps) {
-          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
-        }
-        if (dirtyCaps.toolsets && caps) {
-          const en = caps.toolsets.filter(t => t.enabled)
-          capPayload.enabled_toolsets =
-            en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
-        }
-        if (dirtyCaps.mcp && caps) {
-          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
-        }
-        if (Object.keys(capPayload).length) {
-          await host.request('profiles.configure', { name: slug, ...capPayload })
-        }
-      } catch {
-        /* capability application is best-effort */
+      const slugCreated = await ensureAgentCreated()
+      if (!slugCreated) {
+        setBusy(false)
+        setError('Could not create the agent.')
+        return
       }
 
-      saveBotMeta(slug, { shape, color, image, title: title.trim(), created: Date.now() })
-      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
       host.notify({ kind: 'success', message: `Agent "${displayName({ name: slug, title })}" created` })
       reset()
       onClose()
@@ -3498,7 +3565,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                           className: 'grid gap-1',
                                           children: caps.mcp.map(m => {
                                             const needsSetup =
-                                              m.fromCatalog && !m.installed && (m.requires || []).length > 0
+                                              m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
 
                                             return jsxs(
                                               'label',
@@ -3514,23 +3581,36 @@ function CreateAgentDialog({ open, onClose, roster }) {
                                                     className: 'min-w-0',
                                                     children: [
                                                       jsx('span', { children: m.name }),
-                                                      m.fromCatalog
+                                                      m.fromCatalog && !needsSetup
                                                         ? jsx('span', {
                                                             className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-                                                            children: needsSetup
-                                                              ? (setupProfile
-                                                                  ? null
-                                                                  : 'needs setup (' + (m.requires || []).join(', ') + ') — save the agent first, then set up here')
-                                                              : m.installed
-                                                                ? 'catalog · installed'
-                                                                : 'catalog'
+                                                            children: m.installed
+                                                              ? 'catalog · installed'
+                                                              : 'catalog'
                                                           })
                                                         : null,
-                                                      needsSetup && setupProfile
+                                                      needsSetup
                                                         ? jsx(McpSetupButton, {
-                                                            profile: setupProfile,
+                                                            profile: createdRef.current,
                                                             entry: m,
-                                                            onDone: () => toggleCap('mcp', m.name, true)
+                                                            ensureProfile: ensureAgentCreated,
+                                                            onDone: () => {
+                                                              // Setup done: mark installed so the row's
+                                                              // checkbox un-disables, and enable it.
+                                                              setCaps(prev =>
+                                                                prev
+                                                                  ? {
+                                                                      ...prev,
+                                                                      mcp: prev.mcp.map(x =>
+                                                                        x.name === m.name
+                                                                          ? { ...x, installed: true, enabled: true }
+                                                                          : x
+                                                                      )
+                                                                    }
+                                                                  : prev
+                                                              )
+                                                              setDirtyCaps(prev => ({ ...prev, mcp: true }))
+                                                            }
                                                           })
                                                         : null,
                                                       m.description
