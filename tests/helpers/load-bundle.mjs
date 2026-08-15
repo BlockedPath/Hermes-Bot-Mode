@@ -66,6 +66,26 @@ export function toScript(source = bundleSource) {
  */
 export function evaluateBundle(context, epilogue = "") {
  const script = toScript() + (epilogue ? `\n${epilogue}\n` : "");
+ // esbuild renames duplicate external imports (e.g. `atom` imported in both
+ // plugin-entry and GroupsSection) to `atom2`, `host2`, `jsx2`, etc. to avoid
+ // collisions. The vm sandbox only provides the base names, so alias any
+ // `name2` binding that the bundle actually uses. This keeps the harness
+ // robust as more modules import from the same externals.
+ for (const key of Object.keys(context)) {
+  const alias = `${key}2`;
+  if (!context[alias] && new RegExp(`\\b${alias}\\b`).test(script)) {
+   context[alias] = context[key];
+  }
+ }
+ // React's `useState`/`jsx` are also aliased as `useState2`/`jsx2` when
+ // imported from multiple chunks; handle the lower-cased `jsx` -> `jsx2`
+ // already covered, but also ensure `jsxs` alias if present.
+ if (context.jsx && !context.jsx2 && /\bjsx2\b/.test(script)) {
+  context.jsx2 = context.jsx;
+ }
+ if (context.jsxs && !context.jsxs2 && /\bjsxs2\b/.test(script)) {
+  context.jsxs2 = context.jsxs;
+ }
  vm.runInNewContext(script, context, { filename: "plugin.js" });
  return context;
 }

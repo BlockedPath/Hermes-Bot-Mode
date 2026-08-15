@@ -59,6 +59,8 @@ import {
 } from "@hermes/plugin-sdk";
 import { useEffect, useRef, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
+import { GroupsSection, setGroupsPluginCtx } from "./groups/GroupsSection.mjs";
+import { hydrateGroups } from "./groups/store.mjs";
 
 const ID = "hermes-bots";
 const ROSTER_KEY = [ID, "roster"];
@@ -4738,6 +4740,7 @@ function BotsPane() {
                   ),
                 }),
               }),
+      jsx(GroupsSection, { roster }),
       jsx("div", {
         className: "border-t border-(--ui-stroke-secondary) p-2",
         children: jsxs(Button, {
@@ -4812,6 +4815,18 @@ export default {
         .catch(() => undefined);
     } catch {
       /* no storage on this shell — defaults stay */
+    }
+
+    // Groups: hydrate from storage and keep store's pluginCtx in sync.
+    setGroupsPluginCtx(ctx);
+    try {
+      Promise.resolve(ctx.storage?.get?.("groups"))
+        .then((v) => {
+          if (v !== undefined) hydrateGroups(v);
+        })
+        .catch(() => undefined);
+    } catch {
+      /* groups hydration is best-effort */
     }
 
     // Routines follow the chat you're in: track the live gateway profile.
