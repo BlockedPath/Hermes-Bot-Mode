@@ -44,6 +44,13 @@ function renderBotRow(name = 'alpha') {
     displayName: bot => bot.name,
     duplicateBot: async () => `${name}-copy`,
     haptic: () => undefined,
+    // #49 session-aware-row helpers referenced inside BotRow.
+    previewKind: () => ({ fromBot: false, sender: null }),
+    generatedSessionTitle: () => null,
+    ACTIVE_WINDOW_S: 90,
+    A2A_PREFIX_RE: /^$/,
+    useEffect: () => undefined,
+    useState: initial => [typeof initial === 'function' ? initial() : initial, () => undefined],
     host: {
       state: { gateway: atom('open'), profile: atom('default') },
       warmProfile: profile => warmed.push(profile),
