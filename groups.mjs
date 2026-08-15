@@ -16,17 +16,18 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-
-const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { NAME_RE, UUID_RE, shellQuote } from "./lib/validate.mjs";
 
 function assertGroupName(name) {
   if (typeof name !== "string" || !name.trim())
     throw new Error("Group name is required");
   if (name.length > 64) throw new Error("Group name must be ≤64 characters");
-  // Display name — allow spaces/punctuation but forbid control chars and path separators
-  if (/[\0\n\r/\\]/.test(name))
+  // Display name — allow spaces/punctuation but forbid control characters and
+  // path separators. Shell metacharacters are deliberately NOT filtered here:
+  // the name is legitimately free text, and every use site quotes it with
+  // shellQuote(). Filtering would be a second, weaker line of defence.
+  // eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+  if (/[\0-\x1f\x7f/\\]/.test(name))
     throw new Error("Group name contains invalid characters");
 }
 
@@ -41,10 +42,8 @@ function assertGroupId(id) {
     throw new Error(`Invalid group id "${id}"`);
 }
 
-/** Shell-safe quoting for a CLI argument: JSON.stringify gives a double-quoted, escaped string. */
-function q(arg) {
-  return JSON.stringify(String(arg));
-}
+/** Shell-safe quoting for a CLI argument — POSIX single-quote (see lib/validate.mjs). */
+const q = shellQuote;
 
 export class GroupManager {
   constructor(baseDir = join(homedir(), ".hermes", "agent-data", "agents")) {
@@ -149,8 +148,9 @@ export class GroupManager {
     appendFileSync(logFile, JSON.stringify(msg) + "\n", "utf8");
 
     // Build fan-out CLI commands for member agents.
-    // Every interpolated value is shell-quoted via JSON.stringify so no
-    // metacharacter in group.name / senderName / content can break out.
+    // Every interpolated value is wrapped in POSIX single quotes, which the
+    // shell does not expand, so no metacharacter in group.name / senderName /
+    // content can break out or trigger command substitution.
     const roomLabel = `[Room: ${group.name}]`;
     const prefix = `${roomLabel} 🤖 ${senderName} (@${senderName}): `;
     const commands = group.memberIds

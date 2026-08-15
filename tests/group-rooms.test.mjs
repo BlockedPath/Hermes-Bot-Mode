@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GroupManager } from "../groups.mjs";
@@ -13,6 +22,35 @@ function tmpManager() {
     mgr,
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+/**
+ * Execute a generated cliCommand in a REAL POSIX shell against a stub `hermes`
+ * that records its argv, and return the argv the binary actually received.
+ *
+ * This is the only honest way to test shell quoting: string inspection cannot
+ * tell you whether `$(...)` would have expanded. The stub writes one argument
+ * per line to argvFile, so any substitution shows up as changed argv.
+ */
+function runInShell(cliCommand, dir) {
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const argvFile = join(dir, "argv.txt");
+  const hermesStub = join(binDir, "hermes");
+  writeFileSync(
+    hermesStub,
+    `#!/bin/sh\n: > "${argvFile}"\nfor a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done\n`,
+    "utf8",
+  );
+  chmodSync(hermesStub, 0o755);
+
+  execFileSync("/bin/sh", ["-c", cliCommand], {
+    env: { PATH: `${binDir}:/usr/bin:/bin`, HOME: dir },
+    cwd: dir,
+    stdio: "pipe",
+  });
+
+  return readFileSync(argvFile, "utf8").split("\n").slice(0, -1);
 }
 
 test("unit: createGroup metadata structure is valid", () => {
@@ -84,46 +122,93 @@ test("integration: fan-out recipients excludes sender", () => {
   }
 });
 
-test("integration: fan-out CLI commands are shell-safe (no injection)", () => {
-  const { mgr, cleanup } = tmpManager();
+test("security: command substitution in content does NOT execute", () => {
+  const { dir, mgr, cleanup } = tmpManager();
   try {
+    const canary = join(dir, "PWNED");
     const g = mgr.createGroup({
-      name: 'Eng "Quotes" & $pecial',
+      name: "Team",
       memberIds: ["alpha", "beta"],
     });
-    const malicious = 'hello"; rm -rf /; echo "';
+    // Every shell expansion form, plus quote-breakout and command chaining.
+    const malicious =
+      `hi $(touch ${canary}) \`touch ${canary}\` \${HOME} ` +
+      `'; touch ${canary}; echo '` +
+      `"; touch ${canary}; echo "`;
     const res = mgr.postToRoom({
       groupId: g.id,
       senderName: "alpha",
       content: malicious,
     });
     assert.equal(res.fanOutCount, 1);
-    const cmd = res.fanOutCommands[0].cliCommand;
-    // Extract JSON-quoted segments: "(?:\\.|[^"\\])*"
-    const jsonRe = /"(?:\\.|[^"\\])*"/g;
-    const quoted = cmd.match(jsonRe);
+
+    const argv = runInShell(res.fanOutCommands[0].cliCommand, dir);
+
     assert.ok(
-      quoted && quoted.length >= 2,
-      "command should have at least two JSON-quoted strings (-c and -q)",
+      !existsSync(canary),
+      "no shell expansion or chained command may execute",
     );
-    // Last quoted segment is the -q payload
-    const parsed = JSON.parse(quoted[quoted.length - 1]);
+    // The payload must arrive as ONE argument, byte-identical to the input.
+    const qIndex = argv.lastIndexOf("-q");
+    assert.ok(qIndex >= 0, "stub should have received a -q flag");
+    const payload = argv[qIndex + 1];
     assert.ok(
-      parsed.includes(malicious),
-      "parsed -q should contain original malicious content",
+      payload.endsWith(malicious),
+      `-q argument must be delivered verbatim; got: ${payload}`,
     );
-    // First quoted segment is the -c room label
-    assert.doesNotThrow(() => JSON.parse(quoted[0]));
-    // The raw shell breakout must not appear outside the quoted string —
-    // strip quoted segments, remainder must have no rm.
-    const stripped = cmd.replace(jsonRe, '""');
-    assert.ok(
-      !stripped.includes("rm -rf"),
-      "stripped command must not contain raw injection",
+    assert.equal(
+      argv[argv.length - 1],
+      payload,
+      "-q must be the last argument",
     );
   } finally {
     cleanup();
   }
+});
+
+test("security: shell metacharacters in the group name do NOT execute", () => {
+  const { dir, mgr, cleanup } = tmpManager();
+  try {
+    // Relative name — group names are capped at 64 chars, and runInShell runs
+    // with cwd set to the temp dir, so the canary lands there if it executes.
+    const canary = join(dir, "PWNED_NAME");
+    const g = mgr.createGroup({
+      name: `Eng "Q" & $(touch PWNED_NAME) \`touch PWNED_NAME\``,
+      memberIds: ["alpha", "beta"],
+    });
+    const res = mgr.postToRoom({
+      groupId: g.id,
+      senderName: "alpha",
+      content: "hello",
+    });
+
+    const argv = runInShell(res.fanOutCommands[0].cliCommand, dir);
+
+    assert.ok(!existsSync(canary), "group name must not be expanded");
+    const cIndex = argv.indexOf("-c");
+    assert.ok(cIndex >= 0, "stub should have received a -c flag");
+    assert.equal(argv[cIndex + 1], `[Room: ${g.name}]`);
+  } finally {
+    cleanup();
+  }
+});
+
+test("security: shellQuote is not JSON.stringify (regression guard)", async () => {
+  const { shellQuote } = await import("../lib/validate.mjs");
+  // A double-quoted string still expands in sh — the exact bug this replaced.
+  assert.notEqual(shellQuote("$(id)"), JSON.stringify("$(id)"));
+  assert.equal(shellQuote("$(id)"), "'$(id)'");
+  assert.equal(shellQuote("it's"), "'it'\\''s'");
+  assert.equal(
+    execFileSync(
+      "/bin/sh",
+      ["-c", `printf %s ${shellQuote("$(id) `id` ${x}")}`],
+      {
+        encoding: "utf8",
+      },
+    ),
+    "$(id) `id` ${x}",
+  );
 });
 
 test("integration: postToRoom appends to room.jsonl", () => {
