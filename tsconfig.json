@@ -12,5 +12,11 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["plugin.js", "groups.mjs", "lib/**/*.mjs", "types/**/*.d.ts"]
+  "include": [
+    "src/**/*.mjs",
+    "groups.mjs",
+    "lib/**/*.mjs",
+    "build.mjs",
+    "types/**/*.d.ts"
+  ]
 }

@@ -5,11 +5,13 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "node build.mjs",
+    "build:check": "node build.mjs --check",
     "test": "node --test tests/*.mjs",
     "test:verbose": "node --test --test-reporter=spec tests/*.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json",
-    "check": "npm run lint && npm run typecheck && npm test"
+    "check": "npm run build:check && npm run lint && npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@hermes/plugin-sdk": "*",
@@ -26,6 +28,7 @@
   "devDependencies": {
     "@eslint/js": "^9.15.0",
     "@types/node": "^26.2.0",
+    "esbuild": "^0.28.2",
     "eslint": "^9.15.0",
     "globals": "^15.12.0",
     "typescript": "^5.7.2"

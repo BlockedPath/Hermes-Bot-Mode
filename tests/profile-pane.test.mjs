@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-const source = readFileSync(new URL("../plugin.js", import.meta.url), "utf8");
+import {
+  bundleSource as source,
+  evaluateBundle,
+} from "./helpers/load-bundle.mjs";
 
 function runtime(query = {}) {
   const atom = (value) => ({ get: () => value, set: () => undefined });
@@ -34,16 +34,7 @@ function runtime(query = {}) {
       request: () => undefined,
     },
   };
-  const code = source
-    .replace(
-      /^import\s+\{[\s\S]*?\}\s+from ["']@hermes\/plugin-sdk["'].*\r?\n/m,
-      "",
-    )
-    .replace(/^import .* from ["']react["'].*\r?\n/m, "")
-    .replace(/^import .* from ["']react\/jsx-runtime["'].*\r?\n/m, "")
-    .replace("export default {", "globalThis.plugin = {");
-  vm.runInNewContext(code, context);
-  return context;
+  return evaluateBundle(context);
 }
 
 // Revert 9382b40 intentionally removed ProfilePane — the "Active Profile pane"
