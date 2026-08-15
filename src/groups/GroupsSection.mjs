@@ -13,7 +13,7 @@ import {
   Textarea,
   useValue,
 } from "@hermes/plugin-sdk";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import {
   $groups,
@@ -155,8 +155,11 @@ function CreateGroupDialog({ open, onClose, roster }) {
   });
 }
 
-function GroupRow({ group, onPost }) {
+function GroupRow({ group, onPost, expandAll }) {
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (expandAll !== undefined) setExpanded(expandAll);
+  }, [expandAll]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -271,6 +274,7 @@ function GroupRow({ group, onPost }) {
 export function GroupsSection({ roster }) {
   const groups = useValue($groups);
   const [createOpen, setCreateOpen] = useState(false);
+  const [expandAll, setExpandAll] = useState(false);
 
   const handlePost = async (groupId, content) => {
     console.log("[Groups] handlePost called", { groupId, content });
@@ -429,14 +433,27 @@ export function GroupsSection({ roster }) {
             className: "text-sm font-semibold",
             children: ["Groups", groups.length ? ` (${groups.length})` : ""],
           }),
-          jsx(Button, {
-            variant: "ghost",
-            size: "sm",
-            onClick: () => setCreateOpen(true),
-            children: jsxs("span", {
-              className: "flex items-center gap-1",
-              children: [jsx(Codicon, { name: "add" }), "New Group"],
-            }),
+          jsxs("div", {
+            className: "flex items-center gap-1",
+            children: [
+              groups.length > 1
+                ? jsx(Button, {
+                    variant: "ghost",
+                    size: "sm",
+                    onClick: () => setExpandAll((v) => !v),
+                    children: expandAll ? "Collapse all" : "Expand all",
+                  })
+                : null,
+              jsx(Button, {
+                variant: "ghost",
+                size: "sm",
+                onClick: () => setCreateOpen(true),
+                children: jsxs("span", {
+                  className: "flex items-center gap-1",
+                  children: [jsx(Codicon, { name: "add" }), "New Group"],
+                }),
+              }),
+            ],
           }),
         ],
       }),
@@ -449,7 +466,7 @@ export function GroupsSection({ roster }) {
         : jsx("div", {
             className: "grid gap-2",
             children: groups.map((g) =>
-              jsx(GroupRow, { group: g, onPost: handlePost }, g.id),
+              jsx(GroupRow, { group: g, onPost: handlePost, expandAll }, g.id),
             ),
           }),
       jsx(CreateGroupDialog, {

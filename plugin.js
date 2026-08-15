@@ -43,7 +43,7 @@ import {
   useQuery,
   useValue as useValue2
 } from "@hermes/plugin-sdk";
-import { useEffect, useRef, useState as useState2 } from "react";
+import { useEffect as useEffect2, useRef, useState as useState2 } from "react";
 import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
 
 // src/groups/GroupsSection.mjs
@@ -62,7 +62,7 @@ import {
   Textarea,
   useValue
 } from "@hermes/plugin-sdk";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 
 // src/groups/store.mjs
@@ -331,8 +331,11 @@ function CreateGroupDialog({ open, onClose, roster }) {
     })
   });
 }
-function GroupRow({ group, onPost }) {
+function GroupRow({ group, onPost, expandAll }) {
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (expandAll !== void 0) setExpanded(expandAll);
+  }, [expandAll]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const lastMsg = group.room && group.room.length ? group.room[group.room.length - 1] : null;
@@ -434,6 +437,7 @@ function GroupRow({ group, onPost }) {
 function GroupsSection({ roster }) {
   const groups = useValue($groups);
   const [createOpen, setCreateOpen] = useState(false);
+  const [expandAll, setExpandAll] = useState(false);
   const handlePost = async (groupId, content) => {
     console.log("[Groups] handlePost called", { groupId, content });
     const active = (host.state.profile.get() || "default").trim() || "default";
@@ -576,14 +580,25 @@ function GroupsSection({ roster }) {
             className: "text-sm font-semibold",
             children: ["Groups", groups.length ? ` (${groups.length})` : ""]
           }),
-          jsx(Button, {
-            variant: "ghost",
-            size: "sm",
-            onClick: () => setCreateOpen(true),
-            children: jsxs("span", {
-              className: "flex items-center gap-1",
-              children: [jsx(Codicon, { name: "add" }), "New Group"]
-            })
+          jsxs("div", {
+            className: "flex items-center gap-1",
+            children: [
+              groups.length > 1 ? jsx(Button, {
+                variant: "ghost",
+                size: "sm",
+                onClick: () => setExpandAll((v) => !v),
+                children: expandAll ? "Collapse all" : "Expand all"
+              }) : null,
+              jsx(Button, {
+                variant: "ghost",
+                size: "sm",
+                onClick: () => setCreateOpen(true),
+                children: jsxs("span", {
+                  className: "flex items-center gap-1",
+                  children: [jsx(Codicon, { name: "add" }), "New Group"]
+                })
+              })
+            ]
           })
         ]
       }),
@@ -594,7 +609,7 @@ function GroupsSection({ roster }) {
       }) : jsx("div", {
         className: "grid gap-2",
         children: groups.map(
-          (g) => jsx(GroupRow, { group: g, onPost: handlePost }, g.id)
+          (g) => jsx(GroupRow, { group: g, onPost: handlePost, expandAll }, g.id)
         )
       }),
       jsx(CreateGroupDialog, {
@@ -1104,7 +1119,7 @@ function BotFace({
 }) {
   const [blink, setBlink] = useState2(false);
   const [scanX, setScanX] = useState2(0);
-  useEffect(() => {
+  useEffect2(() => {
     if (mood === "work") {
       let dir = 1;
       let x = 0;
@@ -1218,7 +1233,7 @@ function McpSetupButton({ profile, entry, onDone }) {
   const [keyValues, setKeyValues] = useState2({});
   const [message, setMessage] = useState2("");
   const pollRef = useRef(null);
-  useEffect(() => {
+  useEffect2(() => {
     let alive = true;
     mcpSetupSupported().then((ok) => {
       if (alive) setSupported(ok);
@@ -1540,7 +1555,7 @@ function AvatarPicker({
   const [tab, setTab] = useState2("bot");
   const [describe, setDescribe] = useState2("");
   const [genBusy, setGenBusy] = useState2(false);
-  useEffect(() => {
+  useEffect2(() => {
     if (imagen === null) void probeImagen();
   }, [imagen]);
   const goTab = (id) => {
@@ -1783,7 +1798,7 @@ function petFrameIcon(spriteUrl) {
 }
 function PetThumb({ spriteUrl, size = 40 }) {
   const [icon, setIcon] = useState2(null);
-  useEffect(() => {
+  useEffect2(() => {
     let alive = true;
     petFrameIcon(spriteUrl).then((url) => {
       if (alive) {
@@ -2388,7 +2403,7 @@ function CheckList({ items, onToggle, columns = 2 }) {
 function AdvancedProfileConfig({ bot, state, setState }) {
   const [unsupported, setUnsupported] = useState2(false);
   const [skillFilter, setSkillFilter] = useState2("");
-  useEffect(() => {
+  useEffect2(() => {
     let cancelled = false;
     Promise.all([
       host2.request("profiles.describe", { name: bot }),
@@ -2597,7 +2612,7 @@ function HubSkillsSection({ forProfile, onInstalled }) {
   const [installed, setInstalled] = useState2({});
   const [browseHub, setBrowseHub] = useState2(false);
   const installRef = useRef(null);
-  useEffect(() => {
+  useEffect2(() => {
     if (!browseHub) {
       return void 0;
     }
@@ -2865,7 +2880,7 @@ function EditProfileDialog({ bot, open, onClose }) {
   const [advanced, setAdvanced] = useState2(false);
   const [adv, setAdv] = useState2(emptyAdvancedState());
   const currentKey = bot ? `${bot.name}:${open}` : null;
-  useEffect(() => {
+  useEffect2(() => {
     if (bot && open) {
       setShape(appearance.shape);
       setColor(appearance.color);
@@ -4166,7 +4181,7 @@ function BotsPane() {
   const [createOpen, setCreateOpen] = useState2(false);
   const [editing, setEditing] = useState2(null);
   const prevGatewayUp = useRef(gatewayUp);
-  useEffect(() => {
+  useEffect2(() => {
     if (gatewayUp && !prevGatewayUp.current) {
       resetWatermarks();
     }
