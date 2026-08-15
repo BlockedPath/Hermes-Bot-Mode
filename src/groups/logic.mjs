@@ -74,22 +74,33 @@ export function createGroupMeta({ name, memberIds = [], description = "" }) {
  * `cliCommand` string (for CLI runners) and an `argv` array (for host.request
  * cli.exec, which avoids the shell entirely). Both are derived from the same
  * validated inputs and use shellQuote for the string form.
+ *
+ * By default excludes the sender (bot-to-bot). For human-initiated UI sends,
+ * pass `excludeSender: false` and `allowExternalSender: true` to fan-out to
+ * every member.
  */
-export function buildFanOut({ group, senderName, content }) {
+export function buildFanOut({
+  group,
+  senderName,
+  content,
+  excludeSender = true,
+  allowExternalSender = false,
+}) {
   if (!group || typeof group !== "object") throw new Error("group is required");
   assertGroupId(group.id);
-  assertMemberId(senderName);
-  if (typeof content !== "string") throw new Error("content must be a string");
-  if (!content.trim()) throw new Error("content must not be empty");
-  if (content.length > 4000)
-    throw new Error("content must be ≤4000 characters");
-  if (
-    !Array.isArray(group.memberIds) ||
-    !group.memberIds.includes(senderName)
-  ) {
-    throw new Error(
-      `Sender "${senderName}" is not a member of group "${group.name}"`,
-    );
+  if (allowExternalSender) {
+    if (typeof senderName !== "string" || !senderName.trim())
+      throw new Error("senderName is required");
+  } else {
+    assertMemberId(senderName);
+    if (
+      !Array.isArray(group.memberIds) ||
+      !group.memberIds.includes(senderName)
+    ) {
+      throw new Error(
+        `Sender "${senderName}" is not a member of group "${group.name}"`,
+      );
+    }
   }
 
   const msg = {
@@ -105,7 +116,7 @@ export function buildFanOut({ group, senderName, content }) {
   const fullText = prefix + content;
 
   const fanOutCommands = group.memberIds
-    .filter((m) => m !== senderName)
+    .filter((m) => (excludeSender ? m !== senderName : true))
     .map((member) => {
       assertMemberId(member);
       return {

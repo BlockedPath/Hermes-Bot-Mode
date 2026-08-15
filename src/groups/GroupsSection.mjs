@@ -341,21 +341,24 @@ export function GroupsSection({ roster }) {
       host.notify({ kind: "error", message: "Group not found" });
       return;
     }
-    let sender = active;
-    if (!group.memberIds.includes(sender)) {
-      if (group.memberIds.length === 0) {
-        host.notify({ kind: "error", message: "Group has no members" });
-        return;
-      }
-      console.log(
-        `[Groups] active ${sender} not in group, falling back to ${group.memberIds[0]}`,
-      );
-      sender = group.memberIds[0];
+    if (group.memberIds.length === 0) {
+      host.notify({ kind: "error", message: "Group has no members" });
+      return;
     }
+    // Human-initiated group message: fan-out to every bot, not excluding the sender.
+    // "You" is the human, so every member gets the message (the room is the human's broadcast).
+    const sender = "You";
+    console.log(`[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`, group.memberIds);
 
     let result;
     try {
-      result = postToGroup({ groupId, senderName: sender, content });
+      result = postToGroup({
+        groupId,
+        senderName: sender,
+        content,
+        excludeSender: false,
+        allowExternalSender: true,
+      });
       console.log("[Groups] postToGroup result", result);
     } catch (e) {
       console.error("[Groups] postToGroup failed", e);
