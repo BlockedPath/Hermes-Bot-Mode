@@ -55,6 +55,15 @@ export function listGroups() {
  return $groups.get().slice();
 }
 
+export function deleteGroup(id) {
+ const groups = $groups.get();
+ const idx = groups.findIndex((g) => g.id === id);
+ if (idx === -1) throw new Error(`Group ${id} not found`);
+ const deleted = groups[idx];
+ const next = groups.filter((g) => g.id !== id);
+ return { deleted, next };
+}
+
 /**
  * Append a message to the group's room and return fan-out commands.
  * Caller is responsible for persisting via persistGroups if desired.
