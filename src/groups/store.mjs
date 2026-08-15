@@ -67,8 +67,16 @@ export function deleteGroup(id) {
 /**
  * Append a message to the group's room and return fan-out commands.
  * Caller is responsible for persisting via persistGroups if desired.
+ * Pass `excludeSender: false` and `allowExternalSender: true` for human-initiated
+ * fan-out to every member.
  */
-export function postToGroup({ groupId, senderName, content }) {
+export function postToGroup({
+ groupId,
+ senderName,
+ content,
+ excludeSender = true,
+ allowExternalSender = false,
+}) {
  const groups = $groups.get();
  const idx = groups.findIndex((g) => g.id === groupId);
  if (idx === -1) throw new Error(`Group ${groupId} not found`);
@@ -77,6 +85,8 @@ export function postToGroup({ groupId, senderName, content }) {
   group,
   senderName,
   content,
+  excludeSender,
+  allowExternalSender,
  });
  const updated = { ...group, room: [...(group.room || []), message] };
  const next = groups.slice();

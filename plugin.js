@@ -120,18 +120,25 @@ function createGroupMeta({ name, memberIds = [], description = "" }) {
     room: []
   };
 }
-function buildFanOut({ group, senderName, content }) {
+function buildFanOut({
+  group,
+  senderName,
+  content,
+  excludeSender = true,
+  allowExternalSender = false
+}) {
   if (!group || typeof group !== "object") throw new Error("group is required");
   assertGroupId(group.id);
-  assertMemberId(senderName);
-  if (typeof content !== "string") throw new Error("content must be a string");
-  if (!content.trim()) throw new Error("content must not be empty");
-  if (content.length > 4e3)
-    throw new Error("content must be ≤4000 characters");
-  if (!Array.isArray(group.memberIds) || !group.memberIds.includes(senderName)) {
-    throw new Error(
-      `Sender "${senderName}" is not a member of group "${group.name}"`
-    );
+  if (allowExternalSender) {
+    if (typeof senderName !== "string" || !senderName.trim())
+      throw new Error("senderName is required");
+  } else {
+    assertMemberId(senderName);
+    if (!Array.isArray(group.memberIds) || !group.memberIds.includes(senderName)) {
+      throw new Error(
+        `Sender "${senderName}" is not a member of group "${group.name}"`
+      );
+    }
   }
   const msg = {
     id: randomId(),
@@ -143,7 +150,7 @@ function buildFanOut({ group, senderName, content }) {
   const roomLabel = `[Room: ${group.name}]`;
   const prefix = `${roomLabel} 🤖 ${senderName} (@${senderName}): `;
   const fullText = prefix + content;
-  const fanOutCommands = group.memberIds.filter((m) => m !== senderName).map((member) => {
+  const fanOutCommands = group.memberIds.filter((m) => excludeSender ? m !== senderName : true).map((member) => {
     assertMemberId(member);
     return {
       targetAgent: member,
@@ -201,7 +208,13 @@ function deleteGroup(id) {
   const next = groups.filter((g) => g.id !== id);
   return { deleted, next };
 }
-function postToGroup({ groupId, senderName, content }) {
+function postToGroup({
+  groupId,
+  senderName,
+  content,
+  excludeSender = true,
+  allowExternalSender = false
+}) {
   const groups = $groups.get();
   const idx = groups.findIndex((g) => g.id === groupId);
   if (idx === -1) throw new Error(`Group ${groupId} not found`);
@@ -209,7 +222,9 @@ function postToGroup({ groupId, senderName, content }) {
   const { message, fanOutCommands } = buildFanOut({
     group,
     senderName,
-    content
+    content,
+    excludeSender,
+    allowExternalSender
   });
   const updated = { ...group, room: [...group.room || [], message] };
   const next = groups.slice();
@@ -507,20 +522,24 @@ function GroupsSection({ roster }) {
       host.notify({ kind: "error", message: "Group not found" });
       return;
     }
-    let sender = active;
-    if (!group.memberIds.includes(sender)) {
-      if (group.memberIds.length === 0) {
-        host.notify({ kind: "error", message: "Group has no members" });
-        return;
-      }
-      console.log(
-        `[Groups] active ${sender} not in group, falling back to ${group.memberIds[0]}`
-      );
-      sender = group.memberIds[0];
+    if (group.memberIds.length === 0) {
+      host.notify({ kind: "error", message: "Group has no members" });
+      return;
     }
+    const sender = "You";
+    console.log(
+      `[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`,
+      group.memberIds
+    );
     let result;
     try {
-      result = postToGroup({ groupId, senderName: sender, content });
+      result = postToGroup({
+        groupId,
+        senderName: sender,
+        content,
+        excludeSender: false,
+        allowExternalSender: true
+      });
       console.log("[Groups] postToGroup result", result);
     } catch (e) {
       console.error("[Groups] postToGroup failed", e);
