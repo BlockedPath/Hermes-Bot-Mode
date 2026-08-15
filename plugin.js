@@ -2095,6 +2095,28 @@ function slugify(value) {
     .slice(0, 64)
 }
 
+/** Share one in-flight async operation across concurrent callers. Failures
+ * clear the slot so a later attempt can retry. */
+function singleFlight(ref, start) {
+  if (ref.current) {
+    return ref.current
+  }
+
+  let flight
+  try {
+    flight = Promise.resolve(start())
+  } catch (err) {
+    flight = Promise.reject(err)
+  }
+  ref.current = flight
+  flight.catch(() => {
+    if (ref.current === flight) {
+      ref.current = null
+    }
+  })
+  return flight
+}
+
 /** The agent-to-agent messaging protocol, reusable so a CUSTOM SOUL keeps
  *  the handoff protocol too — a custom SOUL used to silently drop it,
  *  breaking @mentions for customized bots (@wesleysimplicio, #16). */
@@ -3559,6 +3581,10 @@ function CreateAgentDialog({ open, onClose, roster }) {
   // the first MCP credential setup (ensureAgentCreated), whichever comes first —
   // so OAuth / API-key setup works DURING creation, not only after in Edit.
   const createdRef = useRef(null)
+  // In-flight profiles.create shared across concurrent triggers (Create
+  // button + MCP setup buttons). Distinct from createdRef on purpose:
+  // createdRef must stay a slug string for its sibling consumers.
+  const flightRef = useRef(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [shape, setShape] = useState('circle')
@@ -3603,6 +3629,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     }
 
     createdRef.current = null
+    flightRef.current = null
     void deleteBot({ name: draft })
       .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
       .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
@@ -3634,6 +3661,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
     setBusy(false)
     setError(null)
     createdRef.current = null
+    flightRef.current = null
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -3685,10 +3713,13 @@ function CreateAgentDialog({ open, onClose, roster }) {
     )
   }
 
-  // Materialize the profile exactly once. Returns the slug, or null on failure.
-  // Called by submit() and by the MCP setup buttons (so credentials can be
-  // configured mid-creation). Idempotent via createdRef.
-  const ensureAgentCreated = async () => {
+  // Materialize the profile exactly once. createdRef stores the finished slug
+  // (its consumers — the taken check, draft discard on cancel, the MCP setup
+  // button's profile param — all read a string); flightRef shares the
+  // in-flight creation promise so simultaneous MCP setup / Create clicks fire
+  // ONE profiles.create. A settled flight clears its slot: failures retry,
+  // and a null result (form invalid at flight time) isn't sticky.
+  const ensureAgentCreated = () => {
     // Renamed since the draft materialized? The old draft is orphaned —
     // discard it and create fresh under the new slug.
     if (createdRef.current && createdRef.current !== slug) {
@@ -3697,55 +3728,60 @@ function CreateAgentDialog({ open, onClose, roster }) {
     }
 
     if (createdRef.current) {
-      return createdRef.current
-    }
-    if (!valid || taken) {
-      return null
+      return Promise.resolve(createdRef.current)
     }
 
-    const descriptionText = [title, description].filter(Boolean).join(' — ')
+    const flight = singleFlight(flightRef, async () => {
+      if (!valid || taken) {
+        return null
+      }
 
-    await host.request('profiles.create', {
-      name: slug,
-      description: descriptionText,
-      clone_from: cloneFrom === '__none__' ? null : cloneFrom,
-      no_skills: noSkills,
-      // Shared (not copied) auth keeps ONE OAuth/token pool with the main
-      // profile, so refreshes can't invalidate each other. Older gateways
-      // ignore the param and copy — still functional, just forked.
-      share_auth: shareAuth,
-      soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
-      ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
+      const descriptionText = [title, description].filter(Boolean).join(' — ')
+
+      await host.request('profiles.create', {
+        name: slug,
+        description: descriptionText,
+        clone_from: cloneFrom === '__none__' ? null : cloneFrom,
+        no_skills: noSkills,
+        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
+        // profile, so refreshes can't invalidate each other. Older gateways
+        // ignore the param and copy — still functional, just forked.
+        share_auth: shareAuth,
+        soul: composeSoul({ name: slug, title, description, roster, customSoul: soul }),
+        ...(model.trim() && provider.trim() ? { model: model.trim(), provider: provider.trim() } : {})
+      })
+
+      createdRef.current = slug
+
+      // Apply capability picks from the Advanced tabs (best-effort; the
+      // profile exists either way and Edit Profile can finish the job).
+      try {
+        const capPayload = {}
+
+        if (dirtyCaps.skills && caps) {
+          capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
+        }
+        if (dirtyCaps.toolsets && caps) {
+          const en = caps.toolsets.filter(t => t.enabled)
+          capPayload.enabled_toolsets =
+            en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
+        }
+        if (dirtyCaps.mcp && caps) {
+          capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
+        }
+        if (Object.keys(capPayload).length) {
+          await host.request('profiles.configure', { name: slug, ...capPayload })
+        }
+      } catch {
+        /* capability application is best-effort */
+      }
+
+      saveBotMeta(slug, { shape, color, image, imageKind: image ? 'photo' : 'shape', title: title.trim(), created: Date.now() })
+      queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+      return slug
     })
 
-    createdRef.current = slug
-
-    // Apply capability picks from the Advanced tabs (best-effort; the
-    // profile exists either way and Edit Profile can finish the job).
-    try {
-      const capPayload = {}
-
-      if (dirtyCaps.skills && caps) {
-        capPayload.disabled_skills = caps.skills.filter(s => !s.enabled).map(s => s.name)
-      }
-      if (dirtyCaps.toolsets && caps) {
-        const en = caps.toolsets.filter(t => t.enabled)
-        capPayload.enabled_toolsets =
-          en.length === caps.toolsets.length || en.length === 0 ? [] : en.map(t => t.name)
-      }
-      if (dirtyCaps.mcp && caps) {
-        capPayload.enabled_mcp_servers = caps.mcp.filter(m => m.enabled).map(m => m.name)
-      }
-      if (Object.keys(capPayload).length) {
-        await host.request('profiles.configure', { name: slug, ...capPayload })
-      }
-    } catch {
-      /* capability application is best-effort */
-    }
-
-    saveBotMeta(slug, { shape, color, image, imageKind: image ? 'photo' : 'shape', title: title.trim(), created: Date.now() })
-    queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
-    return slug
+    return flight
   }
 
   const submit = async () => {

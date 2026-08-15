@@ -33,9 +33,11 @@ test('CreateAgentDialog materializes the profile lazily and idempotently', () =>
       ? source.indexOf('function RoutinesPane(')
       : source.length
   )
-  // Idempotent creation guard.
-  assert.match(fn, /const ensureAgentCreated = async \(\) =>/)
-  assert.match(fn, /if \(createdRef\.current\) \{\s*return createdRef\.current/)
+  // Idempotent creation guard shares the in-flight creation promise.
+  assert.match(fn, /const ensureAgentCreated = \(\) =>/)
+  assert.match(fn, /singleFlight\(flightRef, async \(\) =>/)
+  // The slug ref stays a string for its sibling consumers (taken check,
+  // draft discard, MCP setup profile param).
   assert.match(fn, /createdRef\.current = slug/)
   // submit() routes through the same helper (no duplicate profiles.create).
   assert.match(fn, /const slugCreated = await ensureAgentCreated\(\)/)
