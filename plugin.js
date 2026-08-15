@@ -460,8 +460,9 @@ function GroupsSection({ roster }) {
     const failures = [];
     for (const cmd of result.fanOutCommands) {
       try {
-        await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
-      } catch {
+        await host.request("cli.exec", { argv: cmd.argv });
+      } catch (err) {
+        console.error(`[Groups] fan-out to ${cmd.targetAgent} failed:`, err);
         failures.push(cmd.targetAgent);
       }
     }
