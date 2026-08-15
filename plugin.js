@@ -492,8 +492,25 @@ function GroupsSection({ roster }) {
       let ok = false;
       try {
         const res = await host.request("cli.exec", { argv: cmd.argv });
-        console.log(`[Groups] cli.exec argv ok for ${cmd.targetAgent}`, res);
-        ok = true;
+        console.log(`[Groups] cli.exec argv result for ${cmd.targetAgent}`, res);
+        if (res && res.code === 0 && !res.blocked) {
+          ok = true;
+        } else if (res?.output?.includes("No session found")) {
+          console.log(`[Groups] No session for ${cmd.targetAgent}, retrying without -c`);
+          const fallbackArgv = cmd.argv.filter((a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c");
+          try {
+            const res2 = await host.request("cli.exec", { argv: fallbackArgv });
+            console.log(`[Groups] fallback without -c for ${cmd.targetAgent}`, res2);
+            if (res2 && res2.code === 0 && !res2.blocked) ok = true;
+            else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
+          } catch (errFb) {
+            console.warn(`[Groups] fallback without -c threw for ${cmd.targetAgent}:`, errFb?.message || errFb);
+          }
+          if (!ok) throw new Error(res?.output || `cli.exec code ${res?.code}`);
+        } else {
+          console.warn(`[Groups] cli.exec argv non-zero for ${cmd.targetAgent}:`, res);
+          throw new Error(res?.output || `cli.exec code ${res?.code}`);
+        }
       } catch (err) {
         console.warn(
           `[Groups] cli.exec argv failed for ${cmd.targetAgent}:`,
