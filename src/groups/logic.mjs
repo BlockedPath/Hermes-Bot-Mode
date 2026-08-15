@@ -12,7 +12,10 @@
 import { NAME_RE, UUID_RE, shellQuote } from "../../lib/validate.mjs";
 
 function randomId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
   return `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -48,8 +51,10 @@ export function createGroupMeta({ name, memberIds = [], description = "" }) {
   if (!Array.isArray(memberIds)) throw new Error("memberIds must be an array");
   const deduped = [...new Set(memberIds)];
   for (const m of deduped) assertMemberId(m);
-  if (typeof description !== "string") throw new Error("description must be a string");
-  if (description.length > 500) throw new Error("description must be ≤500 characters");
+  if (typeof description !== "string")
+    throw new Error("description must be a string");
+  if (description.length > 500)
+    throw new Error("description must be ≤500 characters");
 
   const id = randomId();
   return {
@@ -76,9 +81,15 @@ export function buildFanOut({ group, senderName, content }) {
   assertMemberId(senderName);
   if (typeof content !== "string") throw new Error("content must be a string");
   if (!content.trim()) throw new Error("content must not be empty");
-  if (content.length > 4000) throw new Error("content must be ≤4000 characters");
-  if (!Array.isArray(group.memberIds) || !group.memberIds.includes(senderName)) {
-    throw new Error(`Sender "${senderName}" is not a member of group "${group.name}"`);
+  if (content.length > 4000)
+    throw new Error("content must be ≤4000 characters");
+  if (
+    !Array.isArray(group.memberIds) ||
+    !group.memberIds.includes(senderName)
+  ) {
+    throw new Error(
+      `Sender "${senderName}" is not a member of group "${group.name}"`,
+    );
   }
 
   const msg = {
@@ -102,7 +113,18 @@ export function buildFanOut({ group, senderName, content }) {
         // Shell form — for `sh -c` runners. POSIX single-quoted, no expansion.
         cliCommand: `hermes -p ${member} chat --in ~ -c ${shellQuote(roomLabel)} -Q -q ${shellQuote(fullText)}`,
         // Argv form — for host.request("cli.exec", { argv }). No quoting needed.
-        argv: ["-p", member, "chat", "--in", "~", "-c", roomLabel, "-Q", "-q", fullText],
+        argv: [
+          "-p",
+          member,
+          "chat",
+          "--in",
+          "~",
+          "-c",
+          roomLabel,
+          "-Q",
+          "-q",
+          fullText,
+        ],
       };
     });
 

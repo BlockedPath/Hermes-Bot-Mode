@@ -16,41 +16,43 @@ export const $groups = atom([]);
 
 /** Hydrate from plugin storage value. */
 export function hydrateGroups(value) {
-  if (!Array.isArray(value)) return;
-  // Basic shape validation — drop malformed entries but keep valid ones.
-  const valid = value.filter(
-    (g) =>
-      g &&
-      typeof g === "object" &&
-      typeof g.id === "string" &&
-      typeof g.name === "string" &&
-      Array.isArray(g.memberIds),
-  );
-  $groups.set(valid);
+ if (!Array.isArray(value)) return;
+ // Basic shape validation — drop malformed entries but keep valid ones.
+ const valid = value.filter(
+  (g) =>
+   g &&
+   typeof g === "object" &&
+   typeof g.id === "string" &&
+   typeof g.name === "string" &&
+   Array.isArray(g.memberIds),
+ );
+ $groups.set(valid);
 }
 
 /** Persist to plugin storage. Caller must have pluginCtx available. */
 export function persistGroups(pluginCtx, next) {
-  $groups.set(next);
-  try {
-    Promise.resolve(pluginCtx?.storage?.set?.("groups", next)).catch(() => undefined);
-  } catch {
-    /* no storage */
-  }
+ $groups.set(next);
+ try {
+  Promise.resolve(pluginCtx?.storage?.set?.("groups", next)).catch(
+   () => undefined,
+  );
+ } catch {
+  /* no storage */
+ }
 }
 
 export function createGroup({ name, memberIds, description }) {
-  const meta = createGroupMeta({ name, memberIds, description });
-  const next = [...$groups.get(), meta];
-  return { meta, next };
+ const meta = createGroupMeta({ name, memberIds, description });
+ const next = [...$groups.get(), meta];
+ return { meta, next };
 }
 
 export function getGroup(id) {
-  return $groups.get().find((g) => g.id === id) || null;
+ return $groups.get().find((g) => g.id === id) || null;
 }
 
 export function listGroups() {
-  return $groups.get().slice();
+ return $groups.get().slice();
 }
 
 /**
@@ -58,13 +60,17 @@ export function listGroups() {
  * Caller is responsible for persisting via persistGroups if desired.
  */
 export function postToGroup({ groupId, senderName, content }) {
-  const groups = $groups.get();
-  const idx = groups.findIndex((g) => g.id === groupId);
-  if (idx === -1) throw new Error(`Group ${groupId} not found`);
-  const group = groups[idx];
-  const { message, fanOutCommands } = buildFanOut({ group, senderName, content });
-  const updated = { ...group, room: [...(group.room || []), message] };
-  const next = groups.slice();
-  next[idx] = updated;
-  return { message, fanOutCommands, updated, next };
+ const groups = $groups.get();
+ const idx = groups.findIndex((g) => g.id === groupId);
+ if (idx === -1) throw new Error(`Group ${groupId} not found`);
+ const group = groups[idx];
+ const { message, fanOutCommands } = buildFanOut({
+  group,
+  senderName,
+  content,
+ });
+ const updated = { ...group, room: [...(group.room || []), message] };
+ const next = groups.slice();
+ next[idx] = updated;
+ return { message, fanOutCommands, updated, next };
 }

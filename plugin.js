@@ -47,7 +47,21 @@ import { useEffect, useRef, useState as useState2 } from "react";
 import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
 
 // src/groups/GroupsSection.mjs
-import { Button, Codicon, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, EmptyState, host, Input, ScrollArea, Textarea, useValue } from "@hermes/plugin-sdk";
+import {
+  Button,
+  Codicon,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  host,
+  Input,
+  ScrollArea,
+  Textarea,
+  useValue
+} from "@hermes/plugin-sdk";
 import { useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 
@@ -92,8 +106,10 @@ function createGroupMeta({ name, memberIds = [], description = "" }) {
   if (!Array.isArray(memberIds)) throw new Error("memberIds must be an array");
   const deduped = [...new Set(memberIds)];
   for (const m of deduped) assertMemberId(m);
-  if (typeof description !== "string") throw new Error("description must be a string");
-  if (description.length > 500) throw new Error("description must be ≤500 characters");
+  if (typeof description !== "string")
+    throw new Error("description must be a string");
+  if (description.length > 500)
+    throw new Error("description must be ≤500 characters");
   const id = randomId();
   return {
     id,
@@ -110,9 +126,12 @@ function buildFanOut({ group, senderName, content }) {
   assertMemberId(senderName);
   if (typeof content !== "string") throw new Error("content must be a string");
   if (!content.trim()) throw new Error("content must not be empty");
-  if (content.length > 4e3) throw new Error("content must be ≤4000 characters");
+  if (content.length > 4e3)
+    throw new Error("content must be ≤4000 characters");
   if (!Array.isArray(group.memberIds) || !group.memberIds.includes(senderName)) {
-    throw new Error(`Sender "${senderName}" is not a member of group "${group.name}"`);
+    throw new Error(
+      `Sender "${senderName}" is not a member of group "${group.name}"`
+    );
   }
   const msg = {
     id: randomId(),
@@ -131,7 +150,18 @@ function buildFanOut({ group, senderName, content }) {
       // Shell form — for `sh -c` runners. POSIX single-quoted, no expansion.
       cliCommand: `hermes -p ${member} chat --in ~ -c ${shellQuote(roomLabel)} -Q -q ${shellQuote(fullText)}`,
       // Argv form — for host.request("cli.exec", { argv }). No quoting needed.
-      argv: ["-p", member, "chat", "--in", "~", "-c", roomLabel, "-Q", "-q", fullText]
+      argv: [
+        "-p",
+        member,
+        "chat",
+        "--in",
+        "~",
+        "-c",
+        roomLabel,
+        "-Q",
+        "-q",
+        fullText
+      ]
     };
   });
   return { message: msg, fanOutCommands };
@@ -149,7 +179,9 @@ function hydrateGroups(value) {
 function persistGroups(pluginCtx2, next) {
   $groups.set(next);
   try {
-    Promise.resolve(pluginCtx2?.storage?.set?.("groups", next)).catch(() => void 0);
+    Promise.resolve(pluginCtx2?.storage?.set?.("groups", next)).catch(
+      () => void 0
+    );
   } catch {
   }
 }
@@ -166,7 +198,11 @@ function postToGroup({ groupId, senderName, content }) {
   const idx = groups.findIndex((g) => g.id === groupId);
   if (idx === -1) throw new Error(`Group ${groupId} not found`);
   const group = groups[idx];
-  const { message, fanOutCommands } = buildFanOut({ group, senderName, content });
+  const { message, fanOutCommands } = buildFanOut({
+    group,
+    senderName,
+    content
+  });
   const updated = { ...group, room: [...group.room || [], message] };
   const next = groups.slice();
   next[idx] = updated;
@@ -206,12 +242,17 @@ function CreateGroupDialog({ open, onClose, roster }) {
       children: jsxs("div", {
         className: "grid gap-4",
         children: [
-          jsx(DialogHeader, { children: jsx(DialogTitle, { children: "New Group" }) }),
+          jsx(DialogHeader, {
+            children: jsx(DialogTitle, { children: "New Group" })
+          }),
           error ? jsx("div", { className: "text-sm text-red-500", children: error }) : null,
           jsxs("div", {
             className: "grid gap-2",
             children: [
-              jsx("label", { className: "text-sm font-medium", children: "Group name" }),
+              jsx("label", {
+                className: "text-sm font-medium",
+                children: "Group name"
+              }),
               jsx(Input, {
                 value: name,
                 onChange: (e) => setName(e.target.value),
@@ -222,7 +263,10 @@ function CreateGroupDialog({ open, onClose, roster }) {
           jsxs("div", {
             className: "grid gap-2",
             children: [
-              jsx("label", { className: "text-sm font-medium", children: "Description (optional)" }),
+              jsx("label", {
+                className: "text-sm font-medium",
+                children: "Description (optional)"
+              }),
               jsx(Input, {
                 value: description,
                 onChange: (e) => setDescription(e.target.value),
@@ -233,8 +277,14 @@ function CreateGroupDialog({ open, onClose, roster }) {
           jsxs("div", {
             className: "grid gap-2",
             children: [
-              jsx("label", { className: "text-sm font-medium", children: "Members" }),
-              roster.length === 0 ? jsx("div", { className: "text-sm text-muted-foreground", children: "No agents available" }) : jsx(ScrollArea, {
+              jsx("label", {
+                className: "text-sm font-medium",
+                children: "Members"
+              }),
+              roster.length === 0 ? jsx("div", {
+                className: "text-sm text-muted-foreground",
+                children: "No agents available"
+              }) : jsx(ScrollArea, {
                 className: "max-h-40 rounded border p-2",
                 children: jsx("div", {
                   className: "grid gap-1",
@@ -267,7 +317,11 @@ function CreateGroupDialog({ open, onClose, roster }) {
             children: jsxs("div", {
               className: "flex justify-end gap-2",
               children: [
-                jsx(Button, { variant: "ghost", onClick: onClose, children: "Cancel" }),
+                jsx(Button, {
+                  variant: "ghost",
+                  onClick: onClose,
+                  children: "Cancel"
+                }),
                 jsx(Button, { onClick: handleCreate, children: "Create" })
               ]
             })
@@ -303,8 +357,14 @@ function GroupRow({ group, onPost }) {
           jsxs("div", {
             className: "min-w-0",
             children: [
-              jsx("div", { className: "truncate text-sm font-medium", children: group.name }),
-              jsx("div", { className: "truncate text-xs text-muted-foreground", children: preview })
+              jsx("div", {
+                className: "truncate text-sm font-medium",
+                children: group.name
+              }),
+              jsx("div", {
+                className: "truncate text-xs text-muted-foreground",
+                children: preview
+              })
             ]
           }),
           jsx(Codicon, {
@@ -320,7 +380,10 @@ function GroupRow({ group, onPost }) {
             className: "text-xs text-muted-foreground",
             children: ["Members: ", group.memberIds.join(", ")]
           }),
-          group.description ? jsx("div", { className: "text-xs", children: group.description }) : null,
+          group.description ? jsx("div", {
+            className: "text-xs",
+            children: group.description
+          }) : null,
           group.room && group.room.length ? jsx(ScrollArea, {
             className: "max-h-32 rounded bg-muted/30 p-2",
             children: jsx("div", {
@@ -331,7 +394,10 @@ function GroupRow({ group, onPost }) {
                   {
                     className: "text-xs",
                     children: [
-                      jsx("span", { className: "font-medium", children: `${m.senderName}: ` }),
+                      jsx("span", {
+                        className: "font-medium",
+                        children: `${m.senderName}: `
+                      }),
                       jsx("span", { children: m.content })
                     ]
                   },
@@ -339,7 +405,10 @@ function GroupRow({ group, onPost }) {
                 )
               )
             })
-          }) : jsx("div", { className: "text-xs text-muted-foreground", children: "No messages yet" }),
+          }) : jsx("div", {
+            className: "text-xs text-muted-foreground",
+            children: "No messages yet"
+          }),
           jsxs("div", {
             className: "flex gap-2",
             children: [
@@ -397,13 +466,25 @@ function GroupsSection({ roster }) {
       }
     }
     if (failures.length === 0) {
-      host.notify({ kind: "success", message: `Sent to ${result.fanOutCommands.length} members` });
+      host.notify({
+        kind: "success",
+        message: `Sent to ${result.fanOutCommands.length} members`
+      });
     } else if (failures.length < result.fanOutCommands.length) {
-      host.notify({ kind: "info", message: `Sent, but ${failures.join(", ")} failed` });
+      host.notify({
+        kind: "info",
+        message: `Sent, but ${failures.join(", ")} failed`
+      });
     } else if (result.fanOutCommands.length > 0) {
-      host.notify({ kind: "error", message: `Fan-out failed for ${failures.join(", ")}` });
+      host.notify({
+        kind: "error",
+        message: `Fan-out failed for ${failures.join(", ")}`
+      });
     } else {
-      host.notify({ kind: "info", message: "Message saved (no other members to notify)" });
+      host.notify({
+        kind: "info",
+        message: "Message saved (no other members to notify)"
+      });
     }
   };
   return jsxs("div", {
@@ -433,9 +514,15 @@ function GroupsSection({ roster }) {
         description: "Create a group to message multiple agents at once."
       }) : jsx("div", {
         className: "grid gap-2",
-        children: groups.map((g) => jsx(GroupRow, { group: g, onPost: handlePost }, g.id))
+        children: groups.map(
+          (g) => jsx(GroupRow, { group: g, onPost: handlePost }, g.id)
+        )
       }),
-      jsx(CreateGroupDialog, { open: createOpen, onClose: () => setCreateOpen(false), roster })
+      jsx(CreateGroupDialog, {
+        open: createOpen,
+        onClose: () => setCreateOpen(false),
+        roster
+      })
     ]
   });
 }
