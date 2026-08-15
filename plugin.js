@@ -208,7 +208,13 @@ function deleteGroup(id) {
   const next = groups.filter((g) => g.id !== id);
   return { deleted, next };
 }
-function postToGroup({ groupId, senderName, content, excludeSender = true, allowExternalSender = false }) {
+function postToGroup({
+  groupId,
+  senderName,
+  content,
+  excludeSender = true,
+  allowExternalSender = false
+}) {
   const groups = $groups.get();
   const idx = groups.findIndex((g) => g.id === groupId);
   if (idx === -1) throw new Error(`Group ${groupId} not found`);
@@ -521,7 +527,10 @@ function GroupsSection({ roster }) {
       return;
     }
     const sender = "You";
-    console.log(`[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`, group.memberIds);
+    console.log(
+      `[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`,
+      group.memberIds
+    );
     let result;
     try {
       result = postToGroup({
