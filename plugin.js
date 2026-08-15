@@ -1,5 +1,8 @@
-/**
+/*
  * Hermes Bot Mode — a "one chat per agent" roster for the Hermes desktop.
+ *
+ * (Plain block comment, not JSDoc: the prose below contains "@-mentions",
+ * which the TypeScript JSDoc parser reads as a malformed tag — TS1003.)
  *
  * Left pane "Bots": one row per Hermes profile (a bot = an agent profile) with
  * a customizable avatar (shape + color + eyes, image, or pet). Click opens that
@@ -12,7 +15,7 @@
  *
  * Bots message each other straight into each bot's ONE canonical "Bot
  * Chat" — @-mentions deliver over gateway RPCs (no CLI relay), and
- * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
+ * bot-initiated sends use `hermes -p <bot> chat --in ~ -c 'Bot Chat'`.
  */
 
 import {
@@ -61,6 +64,33 @@ const ID = "hermes-bots";
 const ROSTER_KEY = [ID, "roster"];
 const ROUTINES_KEY = [ID, "routines"];
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** Quote a single argument for POSIX `sh`.
+ *
+ *  Single quotes are the only shell construct with NO interior expansion, so
+ *  $(...), `...`, ${...}, \ and " are all inert. The embedded-quote dance
+ *  closes the string, emits an escaped quote, and reopens it.
+ *
+ *  DO NOT use JSON.stringify here: it yields a DOUBLE-quoted string, and the
+ *  shell still runs command/parameter substitution inside double quotes.
+ *
+ *  Mirror of shellQuote() in lib/validate.mjs — plugin.js must stay a single
+ *  flat file for the desktop loader and the vm-based tests, so the copy is
+ *  deliberate and guarded by tests/validate-parity.test.mjs. */
+function shellQuote(arg) {
+  return `'${String(arg).replace(/'/g, `'\\''`)}'`;
+}
+
+/** Strip control characters and shell metacharacters from free text that ends
+ *  up in prose an LLM is instructed to paste into a terminal. Defence in depth
+ *  on top of shellQuote(). Mirror of sanitizeTitle() in lib/validate.mjs. */
+function sanitizeTitle(title, max = 80) {
+  return String(title || "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\0-\x1f\x7f"'`$\\]/g, "")
+    .slice(0, max)
+    .trim();
+}
 
 /** Captured in register() so components can reach plugin storage. */
 let pluginCtx = null;
@@ -128,17 +158,23 @@ const $selectedBot = atom("default");
  *  { [botName]: { shape, color, title } } */
 const $botMeta = atom({});
 
+// NOTE: the in-plugin group-rooms scaffold ($groups, $selectedGroup,
+// generateGroupId, saveGroups, groupDisplayName, formatGroupPreview) was
+// removed here — it had no call sites, no UI, and no storage hydration, and it
+// fired a profiles.configure request for a "hermes-bots-groups" key nothing
+// reads. groups.mjs remains the file-backed implementation of this feature.
+// Restore with: git show 8cd1537:plugin.js | sed -n '158,193p'
+
 function migrateChatPin(entry) {
   if (!entry || typeof entry !== "object") return entry;
-  if (entry.chat_pin && !entry.chat) {
-    const { chat_pin, ...rest } = entry;
-    return { ...rest, chat: chat_pin };
-  }
-  if (entry.chat_pin && entry.chat) {
-    const { chat_pin, ...rest } = entry;
-    return rest;
-  }
-  return entry;
+  if (!entry.chat_pin) return entry;
+  // Legacy key: promote it to `chat` when `chat` is absent, otherwise drop it.
+  // Explicit delete (rather than a discarded destructure binding) keeps the
+  // intent obvious and lint-clean under any no-unused-vars configuration.
+  const next = { ...entry };
+  if (!next.chat) next.chat = next.chat_pin;
+  delete next.chat_pin;
+  return next;
 }
 
 function saveBotMeta(name, patch) {
@@ -974,7 +1010,10 @@ function McpSetupButton({ profile, entry, onDone }) {
     try {
       const parsed = new URL(String(authUrl));
       if (parsed.protocol === "https:") safeAuthUrl = parsed.toString();
-    } catch {}
+    } catch {
+      // Malformed URL from the server — safeAuthUrl stays null and the
+      // caller surfaces an error below.
+    }
     if (!safeAuthUrl) {
       setPhase("error");
       setMessage("OAuth returned an invalid auth URL");
@@ -1883,7 +1922,9 @@ function slugify(value) {
 function messagingProtocolSection(name, roster) {
   const teammates = (roster || []).filter((b) => b.name !== name);
   // Prefix shown to LLMs — the <agent-name> and "your message" are placeholders
-  // for the agent to fill; the real -q value is built with JSON.stringify at call time.
+  // for the agent to fill; the real -q value is single-quoted via shellQuote()
+  // at call time. The example is quoted the same way so the model copies the
+  // safe form rather than inventing double quotes.
   const safeName = NAME_RE.test(name) ? name : "agent";
   const examplePrefix = `Message from \uD83E\uDD16 ${safeName} (@${safeName}): `;
   return [
@@ -1895,21 +1936,21 @@ function messagingProtocolSection(name, roster) {
     "into it, like a DM. To message a teammate, run:",
     "",
     "```",
-    `hermes -p <agent-name> chat --in ~ -c "Bot Chat" -Q -q ${JSON.stringify(examplePrefix + "your message")}`,
+    `hermes -p <agent-name> chat --in ~ -c 'Bot Chat' -Q -q ${shellQuote(examplePrefix + "your message")}`,
     "",
     "Run the send with background=true and notify_on_complete=true on the",
     "terminal tool, then finish your turn — the reply arrives later as a",
     "background process notification. Never block waiting for it.",
     "```",
     "",
-    '(`--in ~ -c "Bot Chat"` resumes their canonical conversation in the home',
+    "(`--in ~ -c 'Bot Chat'` resumes their canonical conversation in the home",
     "workspace. `-Q` keeps output clean. Always open with the",
     `${JSON.stringify(examplePrefix)} prefix so they know`,
     "who is talking (the @handle lets the app show your avatar to them).",
     "Their reply prints to stdout — relay the relevant part back to the",
     "user, and say which agent it came from. In the rare case the target",
     'has no "Bot Chat" yet, send once WITHOUT -c, then',
-    '`hermes -p <agent-name> sessions rename <session-id> "Bot Chat"`.)',
+    "`hermes -p <agent-name> sessions rename <session-id> 'Bot Chat'`.)",
     "",
     'If a message in YOUR chat starts with "Message from \uD83E\uDD16 <name>", it is',
     "a teammate messaging you, not the user. Answer it directly — your reply",
@@ -3867,13 +3908,16 @@ function routinePrompt(bot, title, instruction, activeProfile) {
     return instruction;
   }
 
-  // bot is validated at creation (NAME_RE), but guard anyway; title may contain quotes/newlines.
+  // bot is validated at creation (NAME_RE), but guard anyway. title and
+  // instruction are free text from the cronjob dialog and must be assumed
+  // hostile: both land inside a command the agent is told to run in a shell.
   const safeBot = NAME_RE.test(bot) ? bot : "default";
-  const safeTitle = String(title || "").slice(0, 80);
+  const safeTitle = sanitizeTitle(title);
   return (
     `You are running the scheduled routine ${JSON.stringify(safeTitle)} for agent '${safeBot}'. ` +
     `Execute it AS that agent so the run lands in its own history: run this in the terminal and relay the output:\n\n` +
-    `hermes -p ${safeBot} chat -c ${JSON.stringify(`Routine: ${safeTitle}`)} -q ${JSON.stringify(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `hermes -p ${safeBot} chat -c ${shellQuote(`Routine: ${safeTitle}`)} -q ${shellQuote(`[Scheduled routine] ${instruction}`)}\n\n` +
+    `Run the command EXACTLY as written — do not re-quote, expand, or "fix" it. ` +
     `If the command fails, report the error instead.`
   );
 }
@@ -4756,7 +4800,10 @@ export default {
                 Promise.resolve(ctx.storage?.set?.("bot-meta", migrated)).catch(
                   () => undefined,
                 );
-              } catch {}
+              } catch {
+                // Best-effort persistence of the migrated meta; a failure here
+                // just means the migration re-runs on the next load.
+              }
             }
           }
         })
@@ -4912,11 +4959,9 @@ export default {
             { name: active, title: activeMeta?.title },
             activeMeta,
           );
-          // Sanitize display name for shell example — titles are free text and may contain quotes/newlines.
-          const senderName =
-            String(rawSender)
-              .replace(/[\r\n"`$\\]/g, "")
-              .slice(0, 40) || "agent";
+          // Sanitize display name for the shell example — titles are free text
+          // and may contain quotes, newlines, or substitution syntax.
+          const senderName = sanitizeTitle(rawSender, 40) || "agent";
           const safeHandle =
             botHandle(active)
               .replace(/[^a-z0-9_-]/gi, "")
@@ -4934,8 +4979,8 @@ export default {
                 (n) =>
                   "`hermes -p " +
                   n +
-                  ' chat --in ~ -c "Bot Chat" -Q -q ' +
-                  JSON.stringify(prefixExample + "<your composed message>") +
+                  " chat --in ~ -c 'Bot Chat' -Q -q " +
+                  shellQuote(prefixExample + "<your composed message>") +
                   "`",
               )
               .join("\n") +
