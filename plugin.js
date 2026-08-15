@@ -1484,15 +1484,9 @@ function createCanonicalChat(name) {
   }
 
   const run = (async () => {
-    const meta = $botMeta.get()[name] || {}
-    const prov = (meta.provider || '').trim()
-    const mod = (meta.model || '').trim()
-
     const res = await host.request('session.create', {
       profile: name,
-      title: 'Bot Chat',
-      ...(prov ? { provider: prov } : {}),
-      ...(mod ? { model: mod } : {})
+      title: 'Bot Chat'
     })
     const sid = res?.stored_session_id
     const runtime = res?.session_id
