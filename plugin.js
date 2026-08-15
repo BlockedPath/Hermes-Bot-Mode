@@ -39,6 +39,7 @@ import {
   haptic,
   host,
   Input,
+  McpTab,
   PALETTE_AREA,
   profileColor,
   queryClient,
@@ -53,6 +54,7 @@ import {
   Switch,
   Textarea,
   Tip,
+  ToolsetConfigPanel,
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
@@ -2502,68 +2504,109 @@ function AdvancedProfileConfig({ bot, state, setState }) {
         jsx('div', {
           className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
           children: jsx(ScrollArea, {
-            style: { maxHeight: 160 },
-            children: jsx(CheckList, { items: state.toolsets, onToggle: toggleToolset, columns: 2 })
+            style: { maxHeight: 320 },
+            children: jsx('div', {
+              className: 'grid gap-1.5',
+              children: state.toolsets.map(tset =>
+                jsxs(
+                  'div',
+                  {
+                    className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
+                    children: [
+                      jsxs('label', {
+                        className: 'flex items-center gap-2 text-xs font-medium text-(--ui-text-secondary)',
+                        children: [
+                          jsx(Checkbox, {
+                            checked: !!tset.enabled,
+                            onCheckedChange: value => toggleToolset(tset.name, Boolean(value))
+                          }),
+                          jsx('span', { children: tset.name })
+                        ]
+                      }),
+                      // The REAL per-toolset config (env vars / API keys / model
+                      // picker / post-setup), scoped to THIS bot's profile, when
+                      // the desktop build exposes it. Older builds: just the toggle.
+                      ToolsetConfigPanel
+                        ? jsx('div', {
+                            className: 'mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5',
+                            children: jsx(ToolsetConfigPanel, { toolset: tset.name, profile: bot })
+                          })
+                        : null
+                    ]
+                  },
+                  tset.name
+                )
+              )
+            })
           })
         })
       ),
       labeled(
-        `MCP servers (${enabledMcp}/${mcpList.length} enabled)`,
+        'MCP servers',
         jsx('div', {
-          className: 'rounded-md border border-(--ui-stroke-secondary) p-2',
-          children: mcpList.length === 0
+          className: 'overflow-hidden rounded-md border border-(--ui-stroke-secondary)',
+          // The REAL MCP tab core Settings renders — per-server enable + OAuth
+          // sign-in + API-key setup + live probes — scoped to this bot's profile.
+          // Feature-detected: older desktop builds without the SDK export fall
+          // back to the plugin's own checkbox list + inline setup buttons.
+          children: McpTab && typeof host.getGateway === 'function'
             ? jsx('div', {
-                className: 'px-1 py-2 text-center text-xs text-(--ui-text-tertiary)',
-                children: 'No MCP servers configured or in the catalog.'
+                style: { minHeight: 220, maxHeight: 360 },
+                children: jsx(McpTab, { gateway: host.getGateway(), profile: bot })
               })
-            : jsx(ScrollArea, {
-                style: { maxHeight: 180 },
-                children: jsx('div', {
-                  className: 'grid gap-1',
-                  children: mcpList.map(m => {
-                    const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
-                    return jsxs(
-                      'label',
-                      {
-                        className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
-                        children: [
-                          jsx(Checkbox, {
-                            checked: !!m.enabled,
-                            disabled: needsSetup,
-                            onCheckedChange: value => toggleMcp(m.name, Boolean(value))
-                          }),
-                          jsxs('span', {
-                            className: 'min-w-0',
-                            children: [
-                              jsx('span', { children: m.name }),
-                              m.fromCatalog && !needsSetup
-                                ? jsx('span', {
-                                    className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
-                                    children: m.installed ? 'catalog · installed' : 'catalog'
-                                  })
-                                : null,
-                              needsSetup
-                                ? jsx(McpSetupButton, {
-                                    profile: bot,
-                                    entry: m,
-                                    onDone: () => toggleMcp(m.name, true)
-                                  })
-                                : null,
-                              m.description
-                                ? jsx('div', {
-                                    className: 'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
-                                    children: m.description
-                                  })
-                                : null
-                            ]
-                          })
-                        ]
-                      },
-                      m.name
-                    )
+            : mcpList.length === 0
+              ? jsx('div', {
+                  className: 'px-1 py-2 text-center text-xs text-(--ui-text-tertiary)',
+                  children: 'No MCP servers configured or in the catalog.'
+                })
+              : jsx(ScrollArea, {
+                  style: { maxHeight: 180 },
+                  children: jsx('div', {
+                    className: 'grid gap-1 p-2',
+                    children: mcpList.map(m => {
+                      const needsSetup = m.fromCatalog && !m.installed && ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
+                      return jsxs(
+                        'label',
+                        {
+                          className: 'flex items-start gap-2 text-xs text-(--ui-text-secondary)',
+                          children: [
+                            jsx(Checkbox, {
+                              checked: !!m.enabled,
+                              disabled: needsSetup,
+                              onCheckedChange: value => toggleMcp(m.name, Boolean(value))
+                            }),
+                            jsxs('span', {
+                              className: 'min-w-0',
+                              children: [
+                                jsx('span', { children: m.name }),
+                                m.fromCatalog && !needsSetup
+                                  ? jsx('span', {
+                                      className: 'ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)',
+                                      children: m.installed ? 'catalog · installed' : 'catalog'
+                                    })
+                                  : null,
+                                needsSetup
+                                  ? jsx(McpSetupButton, {
+                                      profile: bot,
+                                      entry: m,
+                                      onDone: () => toggleMcp(m.name, true)
+                                    })
+                                  : null,
+                                m.description
+                                  ? jsx('div', {
+                                      className: 'truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)',
+                                      children: m.description
+                                    })
+                                  : null
+                              ]
+                            })
+                          ]
+                        },
+                        m.name
+                      )
+                    })
                   })
                 })
-              })
         })
       ),
       labeled(
