@@ -4283,6 +4283,17 @@ function useRoutines(profile) {
   })
 }
 
+function routineCreateTarget(owner, activeBot) {
+  return owner || activeBot
+}
+
+async function invalidateRoutineOwner(profile) {
+  await queryClient.invalidateQueries({
+    queryKey: [...ROUTINES_KEY, profile || ''],
+    exact: true
+  })
+}
+
 /** Pick which cron jobs to show. A failed refresh keeps the last good list. */
 function selectRoutineJobs(data, error, lastJobs, bot) {
   const live = Array.isArray(data?.jobs) ? data.jobs : null
@@ -4367,7 +4378,7 @@ function scheduleLabel(schedule) {
   return schedule || ''
 }
 
-function RoutineRow({ job, onChanged, profile }) {
+function RoutineRow({ job, profile }) {
   const [busy, setBusy] = useState(false)
   // Optimistic overlay: null = trust server state. Set immediately on
   // toggle so the switch responds even before the refetch lands.
@@ -4393,7 +4404,7 @@ function RoutineRow({ job, onChanged, profile }) {
 
     try {
       await host.request('cron.manage', { action, name: job.job_id, ...(profile ? { profile } : {}) })
-      onChanged()
+      await invalidateRoutineOwner(profile)
     } catch (err) {
       setPendingActive(null)
       host.notifyError(err, 'Cronjob update failed')
@@ -4715,7 +4726,7 @@ function CreateRoutineDialog({ bot, open, onClose }) {
         ...(bot ? { profile: bot } : {}),
         ...(repeatN ? { repeat: repeatN } : {})
       })
-      queryClient.invalidateQueries({ queryKey: ROUTINES_KEY })
+      await invalidateRoutineOwner(bot)
       host.notify({ kind: 'success', message: `Cronjob "${title}" scheduled` })
       reset()
       onClose()
@@ -4808,6 +4819,14 @@ function RoutinesPane() {
   const { shape, color, image } = botAppearance(bot, meta)
   const { data, error, isLoading, refetch } = useRoutines(bot)
   const [createOpen, setCreateOpen] = useState(false)
+  const [createOwner, setCreateOwner] = useState(null)
+  const createTarget = routineCreateTarget(createOwner, bot)
+
+  const openCreate = () => {
+    setCreateOwner(bot)
+    setCreateOpen(true)
+  }
+
   const view = selectRoutineJobs(data, error, $lastJobs.get(), bot)
   if (view.live) {
     $lastJobs.set(view.live)
@@ -4854,7 +4873,7 @@ function RoutinesPane() {
               type: 'button',
               className:
                 'flex size-6 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-              onClick: () => setCreateOpen(true),
+              onClick: openCreate,
               children: jsx(Codicon, { name: 'add' })
             })
           })
@@ -4901,7 +4920,7 @@ function RoutinesPane() {
                 jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
-                  onClick: () => setCreateOpen(true),
+                  onClick: openCreate,
                   children: 'Create Cronjob'
                 })
               ]
@@ -4910,15 +4929,16 @@ function RoutinesPane() {
               className: 'min-h-0 flex-1',
               children: jsx('div', {
                 className: 'grid gap-1.5 px-2.5 py-2',
-                children: jobs.map(job => jsx(RoutineRow, { job, profile: bot, onChanged: () => void refetch() }, job.job_id))
+                children: jobs.map(job => jsx(RoutineRow, { job, profile: bot }, job.job_id))
               })
             }),
       jsx(CreateRoutineDialog, {
-        bot,
+        key: createTarget,
+        bot: createTarget,
         open: createOpen,
         onClose: () => {
           setCreateOpen(false)
-          void refetch()
+          setCreateOwner(null)
         }
       })
     ]
