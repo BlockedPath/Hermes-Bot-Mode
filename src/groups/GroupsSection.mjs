@@ -338,23 +338,57 @@ export function GroupsSection({ roster }) {
       // 1) Preferred: cli.exec with argv (no shell, no "hermes" prefix — matches existing "profile describe" usage).
       try {
         const res = await host.request("cli.exec", { argv: cmd.argv });
-        console.log(`[Groups] cli.exec argv result for ${cmd.targetAgent}`, res);
+        console.log(
+          `[Groups] cli.exec argv result for ${cmd.targetAgent}`,
+          res,
+        );
         if (res && res.code === 0 && !res.blocked) {
           ok = true;
         } else if (res?.output?.includes("No session found")) {
-          console.log(`[Groups] No session for ${cmd.targetAgent}, retrying without -c`);
-          const fallbackArgv = cmd.argv.filter((a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c");
+          console.log(
+            `[Groups] No session for ${cmd.targetAgent}, retrying without -c`,
+          );
+          const fallbackArgv = cmd.argv.filter(
+            (a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c",
+          );
           try {
             const res2 = await host.request("cli.exec", { argv: fallbackArgv });
-            console.log(`[Groups] fallback without -c for ${cmd.targetAgent}`, res2);
-            if (res2 && res2.code === 0 && !res2.blocked) ok = true;
-            else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
+            console.log(
+              `[Groups] fallback without -c for ${cmd.targetAgent}`,
+              res2,
+            );
+            if (res2 && res2.code === 0 && !res2.blocked) {
+              ok = true;
+              // Rename the newly created session to the room name so future sends can use -c.
+              const m = res2.output?.match(/session_id:\s*([A-Za-z0-9_-]+)/);
+              if (m) {
+                const sid = m[1];
+                try {
+                  const rn = await host.request("cli.exec", {
+                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`],
+                  });
+                  console.log(`[Groups] renamed ${sid} to [Room: ${group.name}] for ${cmd.targetAgent}`, rn);
+                } catch (eRn) {
+                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
+                }
+              }
+            } else
+              console.warn(
+                `[Groups] fallback without -c failed for ${cmd.targetAgent}:`,
+                res2,
+              );
           } catch (errFb) {
-            console.warn(`[Groups] fallback without -c threw for ${cmd.targetAgent}:`, errFb?.message || errFb);
+            console.warn(
+              `[Groups] fallback without -c threw for ${cmd.targetAgent}:`,
+              errFb?.message || errFb,
+            );
           }
           if (!ok) throw new Error(res?.output || `cli.exec code ${res?.code}`);
         } else {
-          console.warn(`[Groups] cli.exec argv non-zero for ${cmd.targetAgent}:`, res);
+          console.warn(
+            `[Groups] cli.exec argv non-zero for ${cmd.targetAgent}:`,
+            res,
+          );
           throw new Error(res?.output || `cli.exec code ${res?.code}`);
         }
       } catch (err) {
