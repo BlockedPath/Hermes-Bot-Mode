@@ -2120,6 +2120,55 @@ function slugify(value) {
     .slice(0, 64)
 }
 
+/** Partition an already-sorted roster into user-defined groups. Returns
+ *  [{ group: null | name, bots }] — ungrouped bots first (no separator),
+ *  then each group alphabetically (case-insensitive), preserving the
+ *  roster's own ordering (pin + recency) within every section. Groups are
+ *  a per-bot `group` string in bot meta, so they ride the existing
+ *  ui_meta sync to every machine. Empty sections are dropped, so a group
+ *  disappears when its last member leaves — no group registry to manage. */
+function groupRoster(roster, metaByName) {
+  const ungrouped = []
+  const byGroup = new Map()
+
+  for (const bot of roster) {
+    const group = (metaByName[bot.name]?.group || '').trim()
+
+    if (!group) {
+      ungrouped.push(bot)
+      continue
+    }
+
+    if (!byGroup.has(group)) {
+      byGroup.set(group, [])
+    }
+    byGroup.get(group).push(bot)
+  }
+
+  const sections = ungrouped.length ? [{ group: null, bots: ungrouped }] : []
+
+  for (const group of [...byGroup.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))) {
+    sections.push({ group, bots: byGroup.get(group) })
+  }
+
+  return sections
+}
+
+/** Existing group names, alphabetical — feeds the Move-to-group dialog. */
+function knownGroups(metaByName) {
+  const names = new Set()
+
+  for (const meta of Object.values(metaByName || {})) {
+    const group = (meta?.group || '').trim()
+
+    if (group) {
+      names.add(group)
+    }
+  }
+
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+}
+
 /** Share one in-flight async operation across concurrent callers. Failures
  * clear the slot so a later attempt can retry. */
 function singleFlight(ref, start) {
@@ -2282,7 +2331,7 @@ function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
 
 // ── bot row ──────────────────────────────────────────────────────────────────
 
-function BotRow({ bot, onDelete, onEdit }) {
+function BotRow({ bot, onDelete, onEdit, onGroup }) {
   const activeProfile = useValue(host.state.profile)
   const meta = useValue($botMeta)[bot.name]
   const last = bot.last_session
@@ -2453,6 +2502,10 @@ function BotRow({ bot, onDelete, onEdit }) {
             children: 'Sessions'
           }),
           jsx(ContextMenuItem, { onSelect: () => onEdit(bot), children: 'Edit Profile' }),
+          jsx(ContextMenuItem, {
+            onSelect: () => onGroup(bot),
+            children: meta?.group ? `Group: ${meta.group}…` : 'Move to group…'
+          }),
           jsx(ContextMenuItem, {
             onSelect: () => {
               host.notify({ kind: 'info', message: `Duplicating ${displayName(bot, meta)}…` })
@@ -5131,6 +5184,91 @@ function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpe
   })
 }
 
+/** Assign a bot to a group (or clear it). Existing groups are one-click;
+ *  the input creates a new one. The group is a bot-meta field, so it syncs
+ *  cross-machine via ui_meta like pin/title. */
+function GroupDialog({ bot, onClose }) {
+  const meta = useValue($botMeta)
+  const [name, setName] = useState('')
+  const current = (meta[bot?.name]?.group || '').trim()
+  const groups = knownGroups(meta)
+
+  const assign = group => {
+    saveBotMeta(bot.name, { group: group || null })
+    host.notify({
+      kind: 'info',
+      message: group
+        ? `${displayName(bot, meta[bot.name])} moved to “${group}”`
+        : `${displayName(bot, meta[bot.name])} removed from its group`
+    })
+    onClose()
+  }
+
+  return jsx(Dialog, {
+    open: Boolean(bot),
+    onOpenChange: value => {
+      if (!value) {
+        onClose()
+      }
+    },
+    children: jsxs(DialogContent, {
+      className: 'max-w-sm',
+      children: [
+        jsxs(DialogHeader, {
+          children: [
+            jsx(DialogTitle, { children: 'Move to group' }),
+            jsx(DialogDescription, {
+              children: 'Groups render as labeled sections in the Bots roster and sync to every machine.'
+            })
+          ]
+        }),
+        groups.length
+          ? jsx('div', {
+              className: 'flex flex-wrap gap-1.5',
+              children: groups.map(group =>
+                jsx(Button, {
+                  variant: group === current ? 'default' : 'secondary',
+                  size: 'sm',
+                  onClick: () => assign(group),
+                  children: group
+                }, group)
+              )
+            })
+          : null,
+        jsxs('form', {
+          className: 'flex items-center gap-1.5',
+          onSubmit: event => {
+            event.preventDefault()
+            const trimmed = name.trim()
+
+            if (trimmed) {
+              assign(trimmed)
+            }
+          },
+          children: [
+            jsx(Input, {
+              autoFocus: true,
+              placeholder: groups.length ? 'New group…' : 'Group name (e.g. Research)',
+              value: name,
+              onChange: event => setName(event.target.value)
+            }),
+            jsx(Button, { type: 'submit', size: 'sm', disabled: !name.trim(), children: 'Create' })
+          ]
+        }),
+        current
+          ? jsx(Button, {
+              variant: 'ghost',
+              size: 'sm',
+              className: 'justify-self-start',
+              onClick: () => assign(null),
+              children: `Remove from “${current}”`
+            })
+          : null
+      ]
+    })
+  })
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
   const gatewayState = useValue(host.state.gateway)
@@ -5139,6 +5277,7 @@ function BotsPane() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
+  const [grouping, setGrouping] = useState(null)
   const [query, setQuery] = useState('')
   const hideBotChats = useValue($hideBotChats)
   const sessionsWorkspaceName = useValue($botSessionsWorkspace)
@@ -5318,9 +5457,24 @@ function BotsPane() {
                   className: 'hermes-bots-roster min-h-0 flex-1',
                   children: jsx('div', {
                     className: 'grid w-full min-w-0 gap-0.5 px-1.5 pb-2',
-                    children: filteredRoster.map(bot =>
-                      jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing }, bot.name)
-                    )
+                    children: groupRoster(filteredRoster, allMeta).flatMap(section => [
+                      section.group
+                        ? jsxs('div', {
+                            className: 'mt-2 flex items-center gap-2 px-1 pb-0.5 first:mt-0.5',
+                            children: [
+                              jsx('span', {
+                                className:
+                                  'shrink-0 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
+                                children: section.group
+                              }),
+                              jsx('div', { className: 'h-px min-w-0 flex-1 bg-(--ui-stroke-secondary)' })
+                            ]
+                          }, `group:${section.group}`)
+                        : null,
+                      ...section.bots.map(bot =>
+                        jsx(BotRow, { bot, onDelete: setDeleting, onEdit: setEditing, onGroup: setGrouping }, bot.name)
+                      )
+                    ])
                   })
                 }),
       jsx('div', {
@@ -5348,6 +5502,7 @@ function BotsPane() {
           void refetch()
         }
       }),
+      grouping ? jsx(GroupDialog, { bot: grouping, onClose: () => setGrouping(null) }) : null,
       jsx(ConfirmDialog, {
         open: Boolean(deleting),
         title: 'Delete bot and profile?',
