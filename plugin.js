@@ -3536,7 +3536,28 @@ function CreateAgentDialog({ open, onClose, roster }) {
 
   const slug = slugify(name)
   const valid = slug.length > 0 && NAME_RE.test(slug)
-  const taken = roster.some(b => b.name === slug)
+  // Once the draft profile is materialized (Capabilities tab / MCP setup) it
+  // shows up in the roster — its OWN slug must not read as "taken".
+  const taken = roster.some(b => b.name === slug && b.name !== createdRef.current)
+
+  // Draft semantics for the lazily-created profile: opening the Capabilities
+  // tab (or running MCP setup) materializes the profile so the LIVE config
+  // surfaces have a real backend to write to — but until the user hits
+  // Create Agent it is a DRAFT. Cancelling the dialog deletes it, so
+  // preconfigure-then-back-out leaves zero residue. Best-effort and
+  // fire-and-forget: a failed cleanup surfaces a toast, never blocks close.
+  const discardDraft = () => {
+    const draft = createdRef.current
+
+    if (!draft) {
+      return
+    }
+
+    createdRef.current = null
+    void deleteBot({ name: draft })
+      .then(() => host.notify({ kind: 'success', message: `Draft agent "${draft}" discarded` }))
+      .catch(err => host.notifyError(err, `Could not clean up draft profile "${draft}"`))
+  }
 
   const reset = () => {
     setName('')
@@ -3616,6 +3637,13 @@ function CreateAgentDialog({ open, onClose, roster }) {
   // Called by submit() and by the MCP setup buttons (so credentials can be
   // configured mid-creation). Idempotent via createdRef.
   const ensureAgentCreated = async () => {
+    // Renamed since the draft materialized? The old draft is orphaned —
+    // discard it and create fresh under the new slug.
+    if (createdRef.current && createdRef.current !== slug) {
+      discardDraft()
+      setCreatedForCaps(null)
+    }
+
     if (createdRef.current) {
       return createdRef.current
     }
@@ -3713,6 +3741,9 @@ function CreateAgentDialog({ open, onClose, roster }) {
     open,
     onOpenChange: value => {
       if (!value && !busy) {
+        // Cancel path (esc / overlay click): a materialized draft profile is
+        // discarded — preconfigure-then-back-out leaves nothing behind.
+        discardDraft()
         reset()
         onClose()
       }
@@ -3934,7 +3965,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
                               className: 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)',
                               children: taken
                                 ? 'That name is taken — pick another before configuring capabilities.'
-                                : 'Name the agent first — the profile is created when you open this tab.'
+                                : 'Name the agent first — a draft profile is created when you open this tab (discarded if you cancel).'
                             })
                           : !createdForCaps
                             ? jsx('div', {
@@ -4132,6 +4163,7 @@ function CreateAgentDialog({ open, onClose, roster }) {
               variant: 'ghost',
               disabled: busy,
               onClick: () => {
+                discardDraft()
                 reset()
                 onClose()
               },
