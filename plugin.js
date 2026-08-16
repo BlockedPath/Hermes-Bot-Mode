@@ -5483,7 +5483,13 @@ export default {
       id: 'pane',
       area: 'panes',
       title: 'Bots',
-      data: { placement: 'left', width: '260px' },
+      // dock: explicit adoption gesture. Without it the tree adopts a
+      // same-placement pane by CENTER-STACKING it into the sessions zone —
+      // and when that zone's header is hidden (lone-pane auto-hide is the
+      // default the user never changed), the sessions pane vanishes behind
+      // the Bots tab with no visible strip to switch back. Splitting below
+      // the sessions pane keeps both surfaces visible instead.
+      data: { placement: 'left', width: '260px', dock: { pane: 'sessions', pos: 'bottom' } },
       render: () => jsx(BotsPane, {})
     })
 
