@@ -30,7 +30,7 @@ function load() {
         requests.push([method, params])
         return Promise.resolve({})
       },
-      state: { profile: { get: () => 'default', listen: () => undefined } }
+      state: { profile: { get: () => 'default', listen: () => undefined }, gateway: { listen: () => undefined } }
     }
   }
   const source = pluginSource

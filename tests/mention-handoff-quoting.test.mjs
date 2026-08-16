@@ -34,7 +34,7 @@ function load({ activeProfile = 'research', profiles = ['research', 'ops'], titl
         }
         return {}
       },
-      state: { profile: { get: () => activeProfile, listen: () => undefined } }
+      state: { profile: { get: () => activeProfile, listen: () => undefined }, gateway: { listen: () => undefined } }
     }
   }
   const source = pluginSource
