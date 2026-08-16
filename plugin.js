@@ -2203,6 +2203,20 @@ function generatedSessionTitle(session, preview) {
  *  seconds is treated as "active now" (pulsing dot in its row). */
 const ACTIVE_WINDOW_S = 90
 
+/** Bots that are working right now: the profile the gateway is running a
+ *  turn for (busy), plus any bot whose last message landed inside the
+ *  liveness window. Pure — output follows the input roster's order, so
+ *  presence never reorders or hides the normal list. */
+function activeBots(roster, activeProfile, gatewayState, now = Date.now()) {
+  return (roster || []).filter(bot => {
+    const busyTurn = bot.name === activeProfile && gatewayState === 'busy'
+    const last = bot.last_session?.last_active || 0
+    const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
+
+    return busyTurn || inWindow
+  })
+}
+
 // ── bot row ──────────────────────────────────────────────────────────────────
 
 function BotRow({ bot, onDelete, onEdit }) {
@@ -4913,9 +4927,68 @@ function RoutinesPane() {
 
 // ── roster pane ──────────────────────────────────────────────────────────────
 
+/** "Active now" presence strip above the roster: chips for every bot that is
+ *  working right now (the gateway-busy selected profile + bots whose last
+ *  message landed inside the liveness window). Reuses the row avatar; each
+ *  chip opens that bot's canonical Bot Chat. Omitted entirely when nothing
+ *  is active, and never reorders the roster below it. */
+function ActiveNowStrip({ roster, activeProfile, gatewayState, metaByName, onOpen }) {
+  const active = activeBots(roster, activeProfile, gatewayState)
+
+  if (!active.length) {
+    return null
+  }
+
+  return jsxs('div', {
+    role: 'status',
+    'aria-live': 'polite',
+    'aria-label': 'Active now',
+    className: 'flex flex-wrap items-center gap-1.5 px-2.5 pb-1.5',
+    children: [
+      jsx('span', {
+        className: 'text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary)',
+        children: 'Active now'
+      }),
+      ...active.map(bot => {
+        const meta = metaByName?.[bot.name]
+        const { shape, color, image } = botAppearance(bot.name, meta)
+        const photo = Boolean(image && !isBackfilledFacePng(image))
+        const label = displayName(bot, meta)
+
+        return jsx('button', {
+          type: 'button',
+          key: bot.name,
+          title: `Open ${label}'s chat`,
+          className: cn(
+            'flex items-center gap-1.5 rounded-md bg-(--chrome-action-hover) px-1.5 py-1 text-left transition-colors',
+            'hover:bg-(--chrome-action-hover) hover:text-foreground'
+          ),
+          onClick: () => onOpen(bot),
+          children: [
+            jsx(BotFace, {
+              shape,
+              color,
+              image: photo ? image : null,
+              size: 24,
+              name: bot.name,
+              mood: 'work'
+            }),
+            jsx('span', {
+              className: 'max-w-28 truncate text-xs font-medium',
+              children: label
+            })
+          ]
+        })
+      })
+    ]
+  })
+}
+
 function BotsPane() {
   const { data, error, isLoading, refetch } = useRoster()
-  const gatewayUp = useValue(host.state.gateway) === 'open'
+  const gatewayState = useValue(host.state.gateway)
+  const gatewayUp = gatewayState === 'open'
+  const activeProfile = (useValue(host.state.profile) || 'default').trim() || 'default'
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
@@ -5009,6 +5082,28 @@ function BotsPane() {
             ]
           })
         ]
+      }),
+      jsx(ActiveNowStrip, {
+        roster,
+        activeProfile,
+        gatewayState,
+        metaByName: allMeta,
+        onOpen: bot => {
+          haptic('tap')
+          $selectedBot.set(bot.name)
+
+          if ($botUnread.get()[bot.name]) {
+            const next = { ...$botUnread.get() }
+            delete next[bot.name]
+            $botUnread.set(next)
+          }
+
+          void openBotCanonicalChat(bot.name, allMeta[bot.name]?.chat).catch(() => {
+            if (typeof host.newChat === 'function') {
+              host.newChat(bot.name)
+            }
+          })
+        }
       }),
       roster.length
         ? jsx('div', {

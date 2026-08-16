@@ -9,6 +9,7 @@ A **desktop-app plugin** for [Hermes Agent](https://github.com/NousResearch/herm
 ## What you get
 
 - **Bots pane** — a left-side roster with one row per agent profile: avatar, latest-message preview, and timestamp. Click a bot to land in its chat.
+- **Active now** — a presence strip above the roster shows every bot currently working (the gateway-busy profile plus any bot that wrote within the last 90s), each chip opening its canonical chat. It never reorders the roster and disappears when the fleet is idle.
 - **New Agent** — create a bot in seconds: name, title, description. An **Advanced** disclosure opens the full profile config: clone from an existing profile, pin a provider/model, write a custom SOUL.md, skip bundled skills.
 - **Edit Profile** (right-click a bot) — change the avatar, title, and description any time; its own Advanced section edits the live profile: per-skill and per-toolset enablement, model pin, and the full SOUL.md.
 - **Duplicate** (right-click) — full clone of a bot: config, skills, SOUL.md, memory, and its look.
