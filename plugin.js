@@ -2297,39 +2297,9 @@ function BotRow({ bot, onDelete, onEdit }) {
   // liveness window. Not every bot whenever the gateway is busy.
   const botMood = (isActive && gatewayState === 'busy') || activeNow ? 'work' : 'idle'
   const unread = Boolean(useValue($botUnread)[bot.name])
-  // Human-readable session context: WHICH chat the preview belongs to, WHO
-  // sent the last message (bot-to-bot DM vs human), and whether the bot is
-  // actively writing right now (last_active within the liveness window).
+  // WHO sent the last message (bot-to-bot DM vs human) — the full stored
+  // history lives in the Sessions workspace (context menu), not inline.
   const { fromBot } = previewKind(last?.preview)
-  const sessionLabel = last ? generatedSessionTitle(last, last?.preview) : null
-  const [historyOpen, setHistoryOpen] = useState(false)
-  const [history, setHistory] = useState(null)
-  const [historyError, setHistoryError] = useState(false)
-  const lastActiveKey = last?.last_active || 0
-  // Lazy per-bot history: fetched once on first expand, re-fetched while
-  // open whenever the bot writes a new message. Six rows max, gateway-side.
-  useEffect(() => {
-    if (!historyOpen) {
-      return undefined
-    }
-    let cancelled = false
-    host
-      .request('session.list', { profile: bot.name, limit: 6 })
-      .then(res => {
-        if (!cancelled) {
-          setHistory(res?.sessions ?? [])
-          setHistoryError(false)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setHistoryError(true)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [historyOpen, bot.name, lastActiveKey])
   // DM previews read like DMs: strip the delivery prefix, keep the message.
   const displayPreview = fromBot
     ? (last?.preview || '').replace(A2A_PREFIX_RE, '').trim() || '…'
@@ -2437,105 +2407,25 @@ function BotRow({ bot, onDelete, onEdit }) {
                 : null
             ]
           }),
-          sessionLabel
-            ? jsxs('div', {
-                className: 'mt-0.5 flex min-w-0 items-center gap-1',
-                children: [
-                  jsxs('span', {
-                    role: 'button',
-                    tabIndex: 0,
-                    'aria-expanded': historyOpen,
-                    title: historyOpen ? 'Hide session history' : 'Show session history',
+          jsxs('div', {
+            className: 'flex min-w-0 items-center gap-1',
+            children: [
+              jsx('div', {
+                className: fromBot
+                  ? 'min-w-0 truncate text-xs italic text-(--ui-accent,#4f9cf9)'
+                  : 'min-w-0 truncate text-xs text-(--ui-text-tertiary)',
+                children: displayPreview
+              }),
+              fromBot
+                ? jsxs('span', {
                     className:
-                      'flex min-w-0 max-w-full cursor-pointer select-none items-center gap-0.5 rounded px-1 py-px text-[0.65rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
-                    onClick: event => {
-                      event.stopPropagation()
-                      setHistoryOpen(open => !open)
-                    },
-                    onKeyDown: event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        setHistoryOpen(open => !open)
-                      }
-                    },
-                    children: [
-                      jsx(Codicon, {
-                        name: historyOpen ? 'chevron-down' : 'chevron-right',
-                        className: 'shrink-0'
-                      }),
-                      jsx('span', { className: 'truncate', children: sessionLabel })
-                    ]
-                  }),
-                  fromBot
-                    ? jsxs('span', {
-                        className:
-                          'flex shrink-0 items-center gap-1 rounded-full bg-(--chrome-action-hover) px-1.5 py-px text-[0.625rem] font-medium text-(--ui-accent,#4f9cf9)',
-                        title: `Last message came from @${fromBot} (bot-to-bot)`,
-                        children: ['🤖', `@${fromBot}`]
-                      })
-                    : null
-                ]
-              })
-            : null,
-          jsx('div', {
-            className: fromBot
-              ? 'truncate text-xs italic text-(--ui-accent,#4f9cf9)'
-              : 'truncate text-xs text-(--ui-text-tertiary)',
-            children: displayPreview
-          }),
-          historyOpen
-            ? jsxs('div', {
-                className: 'mt-1 flex flex-col gap-0.5 border-l border-(--ui-stroke-secondary) pl-2',
-                children: [
-                  historyError
-                    ? jsx('span', {
-                        className: 'text-[0.65rem] text-(--ui-text-quaternary)',
-                        children: 'Could not load history.'
-                      })
-                    : history === null
-                      ? jsx('span', {
-                          className: 'text-[0.65rem] text-(--ui-text-quaternary)',
-                          children: 'Loading…'
-                        })
-                      : history.length === 0
-                        ? jsx('span', {
-                            className: 'text-[0.65rem] text-(--ui-text-quaternary)',
-                            children: 'No past sessions.'
-                          })
-                        : history.map(s =>
-                            jsxs(
-                              'div',
-                              {
-                                className: 'flex min-w-0 items-baseline justify-between gap-2',
-                                children: [
-                                  jsxs('div', {
-                                    className: 'flex min-w-0 items-baseline gap-1',
-                                    children: [
-                                      s.id === last?.id
-                                        ? jsx('span', {
-                                            className: 'size-1 shrink-0 self-center rounded-full bg-(--ui-accent,#4f9cf9)',
-                                            title: 'Current chat'
-                                          })
-                                        : null,
-                                      jsx('span', {
-                                        className: 'truncate text-[0.65rem] text-(--ui-text-secondary)',
-                                        children: s.title || generatedSessionTitle(s, s.preview) || 'Conversation'
-                                      })
-                                    ]
-                                  }),
-                                  jsx('span', {
-                                    className: 'shrink-0 text-[0.625rem] text-(--ui-text-quaternary)',
-                                    children: relativeTime((s.started_at || 0) * 1000)
-                                  })
-                                ]
-                              },
-                              s.id
-                            )
-                          )
-                ]
-              })
-            : null
+                      'flex shrink-0 items-center gap-1 rounded-full bg-(--chrome-action-hover) px-1.5 py-px text-[0.625rem] font-medium text-(--ui-accent,#4f9cf9)',
+                    title: `Last message came from @${fromBot} (bot-to-bot)`,
+                    children: ['🤖', `@${fromBot}`]
+                  })
+                : null
+            ]
+          })
         ]
       })
     ]

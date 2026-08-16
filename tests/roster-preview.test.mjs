@@ -160,7 +160,7 @@ const DM_BOT = {
   }
 }
 
-test('render: BotRow shows the sender badge, session chip, and stripped DM preview', () => {
+test('render: BotRow shows the sender badge and stripped DM preview', () => {
   const r = renderRuntime()
   const tree = r.__BotRow({ bot: DM_BOT, onEdit: () => undefined })
   const text = textOf(tree)
@@ -176,9 +176,11 @@ test('render: BotRow renders plain previews without a badge', () => {
     onEdit: () => undefined
   })
   const text = textOf(tree)
-  assert.match(text, /Weekly review/)
   assert.match(text, /All hosts are healthy/)
   assert.doesNotMatch(text, /@manager/)
+  // The inline session-history chip is gone — stored history lives in the
+  // Sessions workspace (context menu), so the title no longer renders inline.
+  assert.doesNotMatch(text, /Weekly review/)
 })
 
 test('render: BotRow tolerates a fresh bot with no sessions yet', () => {
