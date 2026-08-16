@@ -17,7 +17,8 @@ function load() {
     PALETTE_AREA: 'palette',
     COMPOSER_AREAS: { middleware: 'middleware' },
     document: { getElementById: () => null, createElement: () => ({}), head: { appendChild: () => undefined } },
-    host: { state: { profile: { listen: () => undefined } } }
+    host: { state: { profile: { listen: () => undefined } } },
+    sdk: new Proxy({}, { get: () => undefined })
   }
   const source = pluginSource
     .replace(/^import \* as sdk from '@hermes\/plugin-sdk'\r?\n/m, '')
