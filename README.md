@@ -1,5 +1,8 @@
 # Hermes Bot Mode
 
+> **📦 ARCHIVED — Bot Mode now ships built into Hermes Desktop.**
+> As of hermes-agent [#87886](https://github.com/NousResearch/hermes-agent/pull/87886), Bot Mode is a bundled, default-on Desktop plugin (toggle in Settings → Plugins) with the multi-source roster included — bots from every connection registered in Settings → Connections. Development continues in-tree at [`apps/desktop/src/plugins/hermes-bots/`](https://github.com/NousResearch/hermes-agent/tree/main/apps/desktop/src/plugins/hermes-bots). File issues and PRs against [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). No manual install is needed on current Desktop builds.
+
 A **desktop-app plugin** for [Hermes Agent](https://github.com/NousResearch/hermes-agent) (installs where the desktop app runs — see Install) that turns your agent profiles into a roster of named bots — each with its own chat, avatar, personality, and schedule.
 
 ![Hermes Agent desktop plugin](https://img.shields.io/badge/hermes-desktop%20plugin-8b5cf6) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
