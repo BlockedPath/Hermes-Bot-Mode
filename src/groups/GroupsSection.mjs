@@ -376,16 +376,49 @@ export function GroupsSection({ roster }) {
       return;
     }
 
+    // Shared transcript: each bot's reply is appended back into the same group room,
+    // so the Groups UI becomes the single conversation where all bots talk together.
+    // Helpers to extract the bot's reply text from cli output (strip ANSI, session_id).
+    const stripReply = (out) => {
+      if (!out || typeof out !== "string") return "";
+      return out
+        // eslint-disable-next-line no-control-regex -- stripping ANSI \x1b
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/session_id:\s*[A-Za-z0-9_-]+\s*$/m, "")
+        .replace(/⚠ Deprecated.*?(\n|$)/gs, "")
+        .trim();
+    };
+    const appendBotReply = (botName, replyText) => {
+      if (!replyText) return;
+      const groupsNow = $groups.get();
+      const idx = groupsNow.findIndex((g) => g.id === groupId);
+      if (idx === -1) return;
+      const g = groupsNow[idx];
+      const msg = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        groupId,
+        senderName: botName,
+        content: replyText,
+        timestamp: Date.now(),
+      };
+      const updated = { ...g, room: [...(g.room || []), msg] };
+      const next = groupsNow.slice();
+      next[idx] = updated;
+      persistGroups(pluginCtxRef, next);
+    };
+
     // Fan-out: try the host CLI first, with fallbacks. Each send is best-effort.
     const failures = [];
     const successes = [];
     for (const cmd of result.fanOutCommands) {
       let ok = false;
+      let replyOutput = null;
       // 1) Preferred: cli.exec with argv (no shell, no "hermes" prefix — matches existing "profile describe" usage).
       try {
         const res = await host.request("cli.exec", { argv: cmd.argv });
         if (res && res.code === 0 && !res.blocked) {
           ok = true;
+          replyOutput = res.output;
         } else if (res?.output?.includes("No session found")) {
           const fallbackArgv = cmd.argv.filter(
             (a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c",
@@ -394,33 +427,20 @@ export function GroupsSection({ roster }) {
             const res2 = await host.request("cli.exec", { argv: fallbackArgv });
             if (res2 && res2.code === 0 && !res2.blocked) {
               ok = true;
+              replyOutput = res2.output;
               // Rename the newly created session to the room name so future sends can use -c.
               const m = res2.output?.match(/session_id:\s*([A-Za-z0-9_-]+)/);
               if (m) {
                 const sid = m[1];
                 try {
                   await host.request("cli.exec", {
-                    argv: [
-                      "-p",
-                      cmd.targetAgent,
-                      "sessions",
-                      "rename",
-                      sid,
-                      `[Room: ${group.name}]`,
-                    ],
+                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`],
                   });
                 } catch (eRn) {
-                  console.warn(
-                    `[Groups] rename failed for ${cmd.targetAgent}:`,
-                    eRn?.message || eRn,
-                  );
+                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
                 }
               }
-            } else
-              console.warn(
-                `[Groups] fallback without -c failed for ${cmd.targetAgent}:`,
-                res2,
-              );
+            } else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
           } catch (errFb) {
             console.warn(
               `[Groups] fallback without -c threw for ${cmd.targetAgent}:`,
@@ -442,35 +462,31 @@ export function GroupsSection({ roster }) {
         );
         // 2) Fallback: try with "hermes" prefix in case this host expects it.
         try {
-          const res2 = await host.request("cli.exec", {
-            argv: ["hermes", ...cmd.argv],
-          });
-          if (res2 && res2.code === 0 && !res2.blocked) ok = true;
-          else throw new Error(res2?.output || `code ${res2?.code}`);
+          const res2 = await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
+          if (res2 && res2.code === 0 && !res2.blocked) {
+            ok = true;
+            replyOutput = res2.output;
+          } else throw new Error(res2?.output || `code ${res2?.code}`);
         } catch (err2) {
-          console.warn(
-            `[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`,
-            err2?.message || err2,
-          );
+          console.warn(`[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`, err2?.message || err2);
           // 3) Last resort: try terminal if the host exposes it (LLM path uses terminal with background).
           try {
             if (typeof host.request === "function") {
-              await host.request("terminal.run", {
-                command: cmd.cliCommand,
-                background: true,
-              });
+              await host.request("terminal.run", { command: cmd.cliCommand, background: true });
+              // terminal.run is background, so no immediate reply to append
               ok = true;
             }
           } catch (err3) {
-            console.warn(
-              `[Groups] terminal.run failed for ${cmd.targetAgent}:`,
-              err3?.message || err3,
-            );
+            console.warn(`[Groups] terminal.run failed for ${cmd.targetAgent}:`, err3?.message || err3);
           }
         }
       }
-      if (ok) successes.push(cmd.targetAgent);
-      else failures.push(cmd.targetAgent);
+      if (ok) {
+        successes.push(cmd.targetAgent);
+        // Append the bot's reply into the shared group transcript
+        const reply = stripReply(replyOutput);
+        if (reply) appendBotReply(cmd.targetAgent, reply);
+      } else failures.push(cmd.targetAgent);
     }
 
     if (failures.length === 0) {
