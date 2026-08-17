@@ -513,11 +513,7 @@ function GroupsSection({ roster }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [expandAll, setExpandAll] = useState(false);
   const handlePost = async (groupId, content) => {
-    console.log("[Groups] handlePost called", { groupId, content });
-    const active = (host.state.profile.get() || "default").trim() || "default";
-    console.log("[Groups] active profile", active);
     const group = getGroup(groupId);
-    console.log("[Groups] group", group);
     if (!group) {
       host.notify({ kind: "error", message: "Group not found" });
       return;
@@ -527,10 +523,6 @@ function GroupsSection({ roster }) {
       return;
     }
     const sender = "You";
-    console.log(
-      `[Groups] human sender You -> fan-out to all ${group.memberIds.length} members`,
-      group.memberIds
-    );
     let result;
     try {
       result = postToGroup({
@@ -540,7 +532,6 @@ function GroupsSection({ roster }) {
         excludeSender: false,
         allowExternalSender: true
       });
-      console.log("[Groups] postToGroup result", result);
     } catch (e) {
       console.error("[Groups] postToGroup failed", e);
       host.notify({ kind: "error", message: e?.message || String(e) });
@@ -548,12 +539,10 @@ function GroupsSection({ roster }) {
     }
     try {
       persistGroups(pluginCtxRef, result.next);
-      console.log("[Groups] persisted, new groups", result.next);
     } catch (e) {
       console.error("[Groups] persist failed", e);
     }
     if (result.fanOutCommands.length === 0) {
-      console.log("[Groups] no fan-out needed (sole member)");
       host.notify({
         kind: "info",
         message: "Message saved (no other members to notify)"
@@ -563,39 +552,24 @@ function GroupsSection({ roster }) {
     const failures = [];
     const successes = [];
     for (const cmd of result.fanOutCommands) {
-      console.log(`[Groups] fan-out to ${cmd.targetAgent}`, {
-        argv: cmd.argv,
-        cliCommand: cmd.cliCommand
-      });
       let ok = false;
       try {
         const res = await host.request("cli.exec", { argv: cmd.argv });
-        console.log(
-          `[Groups] cli.exec argv result for ${cmd.targetAgent}`,
-          res
-        );
         if (res && res.code === 0 && !res.blocked) {
           ok = true;
         } else if (res?.output?.includes("No session found")) {
-          console.log(
-            `[Groups] No session for ${cmd.targetAgent}, retrying without -c`
-          );
           const fallbackArgv = cmd.argv.filter(
             (a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c"
           );
           try {
             const res2 = await host.request("cli.exec", { argv: fallbackArgv });
-            console.log(
-              `[Groups] fallback without -c for ${cmd.targetAgent}`,
-              res2
-            );
             if (res2 && res2.code === 0 && !res2.blocked) {
               ok = true;
               const m = res2.output?.match(/session_id:\s*([A-Za-z0-9_-]+)/);
               if (m) {
                 const sid = m[1];
                 try {
-                  const rn = await host.request("cli.exec", {
+                  await host.request("cli.exec", {
                     argv: [
                       "-p",
                       cmd.targetAgent,
@@ -605,10 +579,6 @@ function GroupsSection({ roster }) {
                       `[Room: ${group.name}]`
                     ]
                   });
-                  console.log(
-                    `[Groups] renamed ${sid} to [Room: ${group.name}] for ${cmd.targetAgent}`,
-                    rn
-                  );
                 } catch (eRn) {
                   console.warn(
                     `[Groups] rename failed for ${cmd.targetAgent}:`,
@@ -644,11 +614,8 @@ function GroupsSection({ roster }) {
           const res2 = await host.request("cli.exec", {
             argv: ["hermes", ...cmd.argv]
           });
-          console.log(
-            `[Groups] cli.exec with hermes prefix ok for ${cmd.targetAgent}`,
-            res2
-          );
-          ok = true;
+          if (res2 && res2.code === 0 && !res2.blocked) ok = true;
+          else throw new Error(res2?.output || `code ${res2?.code}`);
         } catch (err2) {
           console.warn(
             `[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`,
@@ -656,14 +623,10 @@ function GroupsSection({ roster }) {
           );
           try {
             if (typeof host.request === "function") {
-              const res3 = await host.request("terminal.run", {
+              await host.request("terminal.run", {
                 command: cmd.cliCommand,
                 background: true
               });
-              console.log(
-                `[Groups] terminal.run ok for ${cmd.targetAgent}`,
-                res3
-              );
               ok = true;
             }
           } catch (err3) {
@@ -677,7 +640,6 @@ function GroupsSection({ roster }) {
       if (ok) successes.push(cmd.targetAgent);
       else failures.push(cmd.targetAgent);
     }
-    console.log("[Groups] fan-out done", { successes, failures });
     if (failures.length === 0) {
       host.notify({
         kind: "success",
@@ -686,18 +648,18 @@ function GroupsSection({ roster }) {
     } else if (successes.length > 0) {
       host.notify({
         kind: "info",
-        message: `Sent to ${successes.join(", ")}, but ${failures.join(", ")} failed. Check console for cliCommand.`
+        message: `Sent to ${successes.join(", ")}, but ${failures.join(", ")} failed.`
       });
-      console.log(
+      console.warn(
         "[Groups] failed commands",
         result.fanOutCommands.filter((c) => failures.includes(c.targetAgent)).map((c) => c.cliCommand)
       );
     } else {
       host.notify({
         kind: "error",
-        message: `Fan-out failed for ${failures.join(", ")}. Copied command to console.`
+        message: `Fan-out failed for ${failures.join(", ")}.`
       });
-      console.log(
+      console.warn(
         "[Groups] all fan-out failed, commands:",
         result.fanOutCommands.map((c) => c.cliCommand).join("\n")
       );
