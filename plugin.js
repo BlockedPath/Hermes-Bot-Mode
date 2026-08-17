@@ -595,13 +595,27 @@ function GroupsSection({ roster }) {
                 const sid = m[1];
                 try {
                   await host.request("cli.exec", {
-                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`]
+                    argv: [
+                      "-p",
+                      cmd.targetAgent,
+                      "sessions",
+                      "rename",
+                      sid,
+                      `[Room: ${group.name}]`
+                    ]
                   });
                 } catch (eRn) {
-                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
+                  console.warn(
+                    `[Groups] rename failed for ${cmd.targetAgent}:`,
+                    eRn?.message || eRn
+                  );
                 }
               }
-            } else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
+            } else
+              console.warn(
+                `[Groups] fallback without -c failed for ${cmd.targetAgent}:`,
+                res2
+              );
           } catch (errFb) {
             console.warn(
               `[Groups] fallback without -c threw for ${cmd.targetAgent}:`,
@@ -622,20 +636,31 @@ function GroupsSection({ roster }) {
           err?.message || err
         );
         try {
-          const res2 = await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
+          const res2 = await host.request("cli.exec", {
+            argv: ["hermes", ...cmd.argv]
+          });
           if (res2 && res2.code === 0 && !res2.blocked) {
             ok = true;
             replyOutput = res2.output;
           } else throw new Error(res2?.output || `code ${res2?.code}`);
         } catch (err2) {
-          console.warn(`[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`, err2?.message || err2);
+          console.warn(
+            `[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`,
+            err2?.message || err2
+          );
           try {
             if (typeof host.request === "function") {
-              await host.request("terminal.run", { command: cmd.cliCommand, background: true });
+              await host.request("terminal.run", {
+                command: cmd.cliCommand,
+                background: true
+              });
               ok = true;
             }
           } catch (err3) {
-            console.warn(`[Groups] terminal.run failed for ${cmd.targetAgent}:`, err3?.message || err3);
+            console.warn(
+              `[Groups] terminal.run failed for ${cmd.targetAgent}:`,
+              err3?.message || err3
+            );
           }
         }
       }
