@@ -400,13 +400,27 @@ export function GroupsSection({ roster }) {
                 const sid = m[1];
                 try {
                   await host.request("cli.exec", {
-                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`],
+                    argv: [
+                      "-p",
+                      cmd.targetAgent,
+                      "sessions",
+                      "rename",
+                      sid,
+                      `[Room: ${group.name}]`,
+                    ],
                   });
                 } catch (eRn) {
-                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
+                  console.warn(
+                    `[Groups] rename failed for ${cmd.targetAgent}:`,
+                    eRn?.message || eRn,
+                  );
                 }
               }
-            } else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
+            } else
+              console.warn(
+                `[Groups] fallback without -c failed for ${cmd.targetAgent}:`,
+                res2,
+              );
           } catch (errFb) {
             console.warn(
               `[Groups] fallback without -c threw for ${cmd.targetAgent}:`,
@@ -415,26 +429,43 @@ export function GroupsSection({ roster }) {
           }
           if (!ok) throw new Error(res?.output || `cli.exec code ${res?.code}`);
         } else {
-          console.warn(`[Groups] cli.exec argv non-zero for ${cmd.targetAgent}:`, res);
+          console.warn(
+            `[Groups] cli.exec argv non-zero for ${cmd.targetAgent}:`,
+            res,
+          );
           throw new Error(res?.output || `cli.exec code ${res?.code}`);
         }
       } catch (err) {
-        console.warn(`[Groups] cli.exec argv failed for ${cmd.targetAgent}:`, err?.message || err);
+        console.warn(
+          `[Groups] cli.exec argv failed for ${cmd.targetAgent}:`,
+          err?.message || err,
+        );
         // 2) Fallback: try with "hermes" prefix in case this host expects it.
         try {
-          const res2 = await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
+          const res2 = await host.request("cli.exec", {
+            argv: ["hermes", ...cmd.argv],
+          });
           if (res2 && res2.code === 0 && !res2.blocked) ok = true;
           else throw new Error(res2?.output || `code ${res2?.code}`);
         } catch (err2) {
-          console.warn(`[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`, err2?.message || err2);
+          console.warn(
+            `[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`,
+            err2?.message || err2,
+          );
           // 3) Last resort: try terminal if the host exposes it (LLM path uses terminal with background).
           try {
             if (typeof host.request === "function") {
-              await host.request("terminal.run", { command: cmd.cliCommand, background: true });
+              await host.request("terminal.run", {
+                command: cmd.cliCommand,
+                background: true,
+              });
               ok = true;
             }
           } catch (err3) {
-            console.warn(`[Groups] terminal.run failed for ${cmd.targetAgent}:`, err3?.message || err3);
+            console.warn(
+              `[Groups] terminal.run failed for ${cmd.targetAgent}:`,
+              err3?.message || err3,
+            );
           }
         }
       }
@@ -443,13 +474,30 @@ export function GroupsSection({ roster }) {
     }
 
     if (failures.length === 0) {
-      host.notify({ kind: "success", message: `Sent to ${successes.length} members` });
+      host.notify({
+        kind: "success",
+        message: `Sent to ${successes.length} members`,
+      });
     } else if (successes.length > 0) {
-      host.notify({ kind: "info", message: `Sent to ${successes.join(", ")}, but ${failures.join(", ")} failed.` });
-      console.warn("[Groups] failed commands", result.fanOutCommands.filter((c) => failures.includes(c.targetAgent)).map((c) => c.cliCommand));
+      host.notify({
+        kind: "info",
+        message: `Sent to ${successes.join(", ")}, but ${failures.join(", ")} failed.`,
+      });
+      console.warn(
+        "[Groups] failed commands",
+        result.fanOutCommands
+          .filter((c) => failures.includes(c.targetAgent))
+          .map((c) => c.cliCommand),
+      );
     } else {
-      host.notify({ kind: "error", message: `Fan-out failed for ${failures.join(", ")}.` });
-      console.warn("[Groups] all fan-out failed, commands:", result.fanOutCommands.map((c) => c.cliCommand).join("\n"));
+      host.notify({
+        kind: "error",
+        message: `Fan-out failed for ${failures.join(", ")}.`,
+      });
+      console.warn(
+        "[Groups] all fan-out failed, commands:",
+        result.fanOutCommands.map((c) => c.cliCommand).join("\n"),
+      );
       // Also surface one command via notify so user can copy-paste manually.
       try {
         host.notify({
