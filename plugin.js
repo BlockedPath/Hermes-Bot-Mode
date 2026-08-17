@@ -549,14 +549,38 @@ function GroupsSection({ roster }) {
       });
       return;
     }
+    const stripReply = (out) => {
+      if (!out || typeof out !== "string") return "";
+      return out.replace(/\x1b\[[0-9;]*m/g, "").replace(/session_id:\s*[A-Za-z0-9_-]+\s*$/m, "").replace(/⚠ Deprecated.*?(\n|$)/gs, "").trim();
+    };
+    const appendBotReply = (botName, replyText) => {
+      if (!replyText) return;
+      const groupsNow = $groups.get();
+      const idx = groupsNow.findIndex((g2) => g2.id === groupId);
+      if (idx === -1) return;
+      const g = groupsNow[idx];
+      const msg = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        groupId,
+        senderName: botName,
+        content: replyText,
+        timestamp: Date.now()
+      };
+      const updated = { ...g, room: [...g.room || [], msg] };
+      const next = groupsNow.slice();
+      next[idx] = updated;
+      persistGroups(pluginCtxRef, next);
+    };
     const failures = [];
     const successes = [];
     for (const cmd of result.fanOutCommands) {
       let ok = false;
+      let replyOutput = null;
       try {
         const res = await host.request("cli.exec", { argv: cmd.argv });
         if (res && res.code === 0 && !res.blocked) {
           ok = true;
+          replyOutput = res.output;
         } else if (res?.output?.includes("No session found")) {
           const fallbackArgv = cmd.argv.filter(
             (a, idx, arr) => a !== "-c" && arr[idx - 1] !== "-c"
@@ -565,32 +589,19 @@ function GroupsSection({ roster }) {
             const res2 = await host.request("cli.exec", { argv: fallbackArgv });
             if (res2 && res2.code === 0 && !res2.blocked) {
               ok = true;
+              replyOutput = res2.output;
               const m = res2.output?.match(/session_id:\s*([A-Za-z0-9_-]+)/);
               if (m) {
                 const sid = m[1];
                 try {
                   await host.request("cli.exec", {
-                    argv: [
-                      "-p",
-                      cmd.targetAgent,
-                      "sessions",
-                      "rename",
-                      sid,
-                      `[Room: ${group.name}]`
-                    ]
+                    argv: ["-p", cmd.targetAgent, "sessions", "rename", sid, `[Room: ${group.name}]`]
                   });
                 } catch (eRn) {
-                  console.warn(
-                    `[Groups] rename failed for ${cmd.targetAgent}:`,
-                    eRn?.message || eRn
-                  );
+                  console.warn(`[Groups] rename failed for ${cmd.targetAgent}:`, eRn?.message || eRn);
                 }
               }
-            } else
-              console.warn(
-                `[Groups] fallback without -c failed for ${cmd.targetAgent}:`,
-                res2
-              );
+            } else console.warn(`[Groups] fallback without -c failed for ${cmd.targetAgent}:`, res2);
           } catch (errFb) {
             console.warn(
               `[Groups] fallback without -c threw for ${cmd.targetAgent}:`,
@@ -611,34 +622,28 @@ function GroupsSection({ roster }) {
           err?.message || err
         );
         try {
-          const res2 = await host.request("cli.exec", {
-            argv: ["hermes", ...cmd.argv]
-          });
-          if (res2 && res2.code === 0 && !res2.blocked) ok = true;
-          else throw new Error(res2?.output || `code ${res2?.code}`);
+          const res2 = await host.request("cli.exec", { argv: ["hermes", ...cmd.argv] });
+          if (res2 && res2.code === 0 && !res2.blocked) {
+            ok = true;
+            replyOutput = res2.output;
+          } else throw new Error(res2?.output || `code ${res2?.code}`);
         } catch (err2) {
-          console.warn(
-            `[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`,
-            err2?.message || err2
-          );
+          console.warn(`[Groups] cli.exec with prefix also failed for ${cmd.targetAgent}:`, err2?.message || err2);
           try {
             if (typeof host.request === "function") {
-              await host.request("terminal.run", {
-                command: cmd.cliCommand,
-                background: true
-              });
+              await host.request("terminal.run", { command: cmd.cliCommand, background: true });
               ok = true;
             }
           } catch (err3) {
-            console.warn(
-              `[Groups] terminal.run failed for ${cmd.targetAgent}:`,
-              err3?.message || err3
-            );
+            console.warn(`[Groups] terminal.run failed for ${cmd.targetAgent}:`, err3?.message || err3);
           }
         }
       }
-      if (ok) successes.push(cmd.targetAgent);
-      else failures.push(cmd.targetAgent);
+      if (ok) {
+        successes.push(cmd.targetAgent);
+        const reply = stripReply(replyOutput);
+        if (reply) appendBotReply(cmd.targetAgent, reply);
+      } else failures.push(cmd.targetAgent);
     }
     if (failures.length === 0) {
       host.notify({
